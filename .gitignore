@@ -1,0 +1,34 @@
+# ── PR Analysis output (regenerated each run) ────────────────────────────────
+pr-analysis/*/summary.json
+pr-analysis/*/changes.diff
+pr-analysis/*/run.log
+pr-analysis/.cache/
+pr-analysis/detected_services.txt
+
+# ── Cloned service repos (auto-cloned on first analysis) ─────────────────────
+# Add your service repo names here so they aren't committed
+# Example:
+# my-service-a/
+# my-service-b/
+
+# ── Environment ──────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Dependencies ─────────────────────────────────────────────────────────────
+node_modules/
+dist/
+build/
+venv/
+__pycache__/
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.idea/
+*.swp
+*.swo
+.vscode/
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

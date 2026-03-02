@@ -1,0 +1,140 @@
+@Library(['GlobalJenkinsLibrary@2', 'ContentJenkinsLibrary']) _
+
+pipeline {
+  parameters {
+    string(
+      name: 'JIRA_IDS',
+      description: 'Comma-separated JIRA ticket IDs (e.g., DBCCPMCMS-40662,DBCCPMCMS-40663,DBCCPMCMS-40664)',
+      defaultValue: '',
+      trim: true
+    )
+  }
+  
+  agent {
+    label 'ubuntu_node-22'  // Ubuntu agent with Git, Python 3
+  }
+  
+  options {
+    timestamps()
+    timeout(time: 15, unit: 'MINUTES')
+    buildDiscarder(logRotator(numToKeepStr: '30'))
+  }
+  
+  stages {
+    stage('Validate Input') {
+      steps {
+        script {
+          // Validate JIRA IDs format
+          if (!params.JIRA_IDS || params.JIRA_IDS.isEmpty()) {
+            error("❌ JIRA_IDS parameter is empty. Please provide comma-separated JIRA IDs (e.g., DBCCPMCMS-40662,DBCCPMCMS-40663)")
+          }
+          
+          // Split and validate each ID
+          def ids = params.JIRA_IDS.split(',').collect { it.trim() }
+          
+          ids.each { id ->
+            if (!id.matches('[A-Z]+-[0-9]+')) {
+              error("❌ Invalid JIRA ID format: ${id}. Expected format: ABC-123 (letters-numbers)")
+            }
+          }
+          
+          echo "✅ Validated ${ids.size()} JIRA ID(s): ${ids.join(', ')}"
+        }
+      }
+    }
+    
+    stage('Detect Services') {
+      steps {
+        script {
+          echo "🔍 Detecting services with changes for: ${params.JIRA_IDS}"
+          
+          sh '''
+            bash scripts/detect_services.sh "${JIRA_IDS}"
+            echo ""
+            echo "=== Services with changes ==="
+            cat pr-analysis/detected_services.txt 2>/dev/null || echo "No services matched"
+          '''
+        }
+      }
+    }
+    
+    stage('Run Analysis') {
+      steps {
+        script {
+          echo "📊 Running PR analysis for all detected services in parallel..."
+          
+          sh '''
+            bash scripts/run_all_analyses.sh "${JIRA_IDS}"
+            echo ""
+            echo "✅ Analysis complete!"
+          '''
+        }
+      }
+    }
+    
+    stage('Verify Results') {
+      steps {
+        sh '''
+          echo "📁 Summary.json files generated:"
+          find pr-analysis -name "summary.json" -type f -exec ls -lh {} \\;
+          
+          echo ""
+          echo "Diff files:"
+          find pr-analysis -name "changes.diff" -type f -exec ls -lh {} \\;
+          
+          echo ""
+          echo "Detected services:"
+          cat pr-analysis/detected_services.txt 2>/dev/null || echo "None"
+        '''
+      }
+    }
+  }
+  
+  post {
+    always {
+      script {
+        // Archive all analysis artifacts
+        archiveArtifacts(
+          artifacts: 'pr-analysis/*/summary.json,pr-analysis/*/changes.diff,pr-analysis/detected_services.txt,pr-analysis/*/run.log',
+          allowEmptyArchive: true,
+          fingerprint: true
+        )
+        
+        sh '''
+          echo ""
+          echo "================================================"
+          echo "📦 ARTIFACTS READY FOR DOWNLOAD"
+          echo "================================================"
+          echo "Build URL: ${BUILD_URL}"
+          echo "Artifacts: ${BUILD_URL}artifact/pr-analysis/"
+          echo ""
+          echo "Next step:"
+          echo "1. Download summary.json files from artifacts"
+          echo "2. Provide them to Copilot:"
+          echo "   'Act as PR analyser'"
+          echo "   Source JIRA: <first_id_from_JIRA_IDS>"
+          echo "   Destination JIRA: <where_to_post_results>"
+          echo "3. Copilot will generate risk analysis"
+          echo "================================================"
+        '''
+      }
+    }
+    
+    failure {
+      script {
+        sh '''
+          echo "❌ ANALYSIS FAILED"
+          echo ""
+          echo "Error logs:"
+          find pr-analysis -name "run.log" -type f -exec echo "=== {} ===" \\; -exec tail -20 {} \\;
+          echo ""
+          echo "Troubleshooting:"
+          echo "1. Verify JIRA IDs are valid format (e.g., DBCCPMCMS-40662)"
+          echo "2. Verify commits exist in repos matching the JIRA IDs"
+          echo "3. Check network/SSH connectivity to Bitbucket"
+          echo "4. Verify config.env has correct REPO_BASE_URL and SERVICES list"
+        '''
+      }
+    }
+  }
+}
