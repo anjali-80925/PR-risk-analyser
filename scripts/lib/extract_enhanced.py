@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 """
-Enhanced PR analysis extractor.
-Reads a git diff + repo path and produces a rich summary.json with:
-  - changed_files (filtered, no lockfiles)
-  - signature_changes (params/return type changes)
-  - removed_features (deleted imports, component usages, test blocks)
-  - new_status_values (added enum/const entries)
-  - blast_radius (callers of changed exports not in the diff)
-  - test_changes (modified assertions, removed/added tests)
-  - diff_stats (lines added/removed, new files)
+Enhanced PR analysis extractor — language-aware.
+
+Detects the primary language(s) from the diff and applies the correct patterns
+for signature changes, imports, test frameworks, exports, and blast-radius
+file extensions.
+
+Supported language families:
+  - javascript / typescript  (JS/TS/JSX/TSX)
+  - java                     (Java / Kotlin / Groovy)
+  - python
+  - go
+  - csharp                   (C# / .NET)
+  - generic                  (fallback — still produces diff_stats)
+
+Adding a new language:  add a LANG_* dict and register it in LANGUAGE_PROFILES.
 
 Usage:
-  python3 scripts/lib/extract_enhanced.py \
-    --diff <changes.diff> \
-    --repo <path/to/repo> \
-    --service <name> \
-    --jira <JIRA_ID_1,JIRA_ID_2,...> \
-    --commits <commits_jsonl_file> \
+  python3 scripts/lib/extract_enhanced.py \\
+    --diff <changes.diff> \\
+    --repo <path/to/repo> \\
+    --service <name> \\
+    --jira <JIRA_ID_1,JIRA_ID_2,...> \\
+    --commits <commits_jsonl_file> \\
     --out <output_dir>
 """
 
@@ -28,24 +34,237 @@ import subprocess
 import sys
 from pathlib import Path
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# LANGUAGE PROFILES
+# ═══════════════════════════════════════════════════════════════════════════════
+# Each profile defines patterns for ONE language family.  The detector picks
+# profiles based on file extensions found in the diff.
 
-# ── Files to exclude from analysis ────────────────────────────────────────────
-EXCLUDE_PATTERNS = [
-    r'package-lock\.json$',
-    r'yarn\.lock$',
-    r'pnpm-lock\.yaml$',
-    r'\.lock$',
-    r'\.min\.js$',
-    r'\.map$',
-    r'dist/',
-    r'build/',
-    r'node_modules/',
-]
+LANG_JS = {
+    "name": "javascript",
+    "extensions": {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"},
+    "exclude_patterns": [
+        r'package-lock\.json$', r'yarn\.lock$', r'pnpm-lock\.yaml$',
+        r'\.min\.js$', r'\.map$', r'node_modules/', r'dist/', r'build/',
+    ],
+    "grep_includes": ["*.ts", "*.tsx", "*.js", "*.jsx"],
+    "grep_excludes": ["node_modules", "dist", "build", ".git"],
+    # --- signatures ---
+    "sig_pattern": (
+        r'^[-+]\s*(?:export\s+)?(?:const|function|let|var)\s+'
+        r'(\w+)\s*(?::\s*\w+)?\s*=?\s*(?:<[^>]+>\s*)?\(([^)]*)\)'
+    ),
+    "ret_pattern": (
+        r'^[-+]\s*(?:export\s+)?(?:const|function)\s+(\w+).*\)\s*(?::\s*(.+?)\s*(?:=>|{|\{))'
+    ),
+    # --- imports ---
+    "import_pattern": r'import\s+.*\{([^}]+)\}.*from',
+    "component_pattern": r'<(\w+)[\s/>]',
+    # --- exports (for blast radius) ---
+    "export_patterns": [
+        r'export\s+(?:const|function|type|interface|let|var)\s+(\w+)',
+        r'export\s+\{([^}]+)\}',
+    ],
+    # --- enums / status values ---
+    "enum_pattern": r'\[(\w+\.\w+)\]\s*:\s*[\'"]?(\w+)',
+    "array_value_pattern": r"['\"](\w[\w\s]+\w)['\"]",
+    "comment_prefixes": ("//", "*"),
+    # --- tests ---
+    "test_file_pattern": r'\.(test|spec)\.(tsx?|jsx?|js)$',
+    "test_block_pattern": r"(?:it|test|describe)(?:\.each)?\s*\(\s*['\"`](.+?)['\"`]",
+    "assertion_pattern": r"expect\(.*\)\.to\w+\((.+)\)",
+}
+
+LANG_JAVA = {
+    "name": "java",
+    "extensions": {".java", ".kt", ".groovy", ".scala"},
+    "exclude_patterns": [
+        r'/target/', r'\.class$', r'\.jar$', r'\.war$', r'\.ear$',
+        r'build/', r'\.gradle\.kts?$', r'gradle-wrapper',
+    ],
+    "grep_includes": ["*.java", "*.kt", "*.groovy", "*.scala"],
+    "grep_excludes": ["target", "build", ".git", ".gradle"],
+    "sig_pattern": (
+        r'^[-+]\s*(?:public|protected|private|static|final|abstract|synchronized|\s)*'
+        r'(?:[\w<>\[\],\s]+)\s+(\w+)\s*\(([^)]*)\)'
+    ),
+    "ret_pattern": (
+        r'^[-+]\s*(?:public|protected|private|static|final|abstract|\s)*'
+        r'([\w<>\[\]]+)\s+(\w+)\s*\('
+    ),
+    "import_pattern": r'import\s+([\w.]+(?:\.\*)?)\s*;',
+    "component_pattern": None,
+    "export_patterns": [
+        r'(?:public|protected)\s+(?:static\s+)?(?:final\s+)?(?:class|interface|enum|record)\s+(\w+)',
+        r'(?:public|protected)\s+(?:static\s+)?(?:[\w<>\[\]]+)\s+(\w+)\s*\(',
+    ],
+    "enum_pattern": r'^\s*(\w+)\s*\((.+?)\)',
+    "array_value_pattern": r'"(\w[\w\s]+\w)"',
+    "comment_prefixes": ("//", "*", "/*"),
+    "test_file_pattern": r'(?:Test|IT|Spec)\.(java|kt|groovy|scala)$',
+    "test_block_pattern": r'(?:@Test|@ParameterizedTest|@RepeatedTest|def\s+"(.+?)").*?(?:void|fun)\s+(\w+)\s*\(',
+    "assertion_pattern": r'(?:assert\w+|assertThat|expect\w*)\s*\((.+?)\)',
+}
+
+LANG_PYTHON = {
+    "name": "python",
+    "extensions": {".py", ".pyx", ".pyi"},
+    "exclude_patterns": [
+        r'__pycache__/', r'\.pyc$', r'\.pyo$', r'\.egg-info/',
+        r'dist/', r'build/', r'venv/', r'\.venv/', r'poetry\.lock$',
+        r'Pipfile\.lock$',
+    ],
+    "grep_includes": ["*.py"],
+    "grep_excludes": ["__pycache__", "venv", ".venv", "dist", "build", ".git"],
+    "sig_pattern": r'^[-+]\s*(?:async\s+)?def\s+(\w+)\s*\(([^)]*)\)',
+    "ret_pattern": r'^[-+]\s*(?:async\s+)?def\s+(\w+)\s*\(.*\)\s*->\s*(.+?)\s*:',
+    "import_pattern": r'(?:from\s+([\w.]+)\s+import\s+(.+)|import\s+([\w.]+))',
+    "component_pattern": None,
+    "export_patterns": [
+        r'(?:def|class)\s+(\w+)',
+        r'(\w+)\s*=\s*',
+    ],
+    "enum_pattern": r'(\w+)\s*=\s*[\'"](\w+)[\'"]',
+    "array_value_pattern": r'[\'"](\w[\w\s]+\w)[\'"]',
+    "comment_prefixes": ("#",),
+    "test_file_pattern": r'(?:test_\w+|_test)\.py$',
+    "test_block_pattern": r'(?:def\s+(test_\w+)|class\s+(Test\w+))',
+    "assertion_pattern": r'(?:assert\s+(.+)|self\.assert\w+\((.+?)\)|pytest\.\w+\((.+?)\))',
+}
+
+LANG_GO = {
+    "name": "go",
+    "extensions": {".go"},
+    "exclude_patterns": [
+        r'vendor/', r'go\.sum$',
+    ],
+    "grep_includes": ["*.go"],
+    "grep_excludes": ["vendor", ".git"],
+    "sig_pattern": r'^[-+]\s*func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)\s*\(([^)]*)\)',
+    "ret_pattern": r'^[-+]\s*func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)\s*\(.*\)\s+(.+?)\s*\{',
+    "import_pattern": r'"([\w./\-]+)"',
+    "component_pattern": None,
+    "export_patterns": [
+        r'func\s+(?:\(\w+\s+\*?\w+\)\s+)?([A-Z]\w*)\s*\(',
+        r'type\s+([A-Z]\w*)\s+(?:struct|interface)',
+    ],
+    "enum_pattern": r'(\w+)\s*=\s*(?:iota|"(\w+)")',
+    "array_value_pattern": r'"(\w[\w\s]+\w)"',
+    "comment_prefixes": ("//",),
+    "test_file_pattern": r'_test\.go$',
+    "test_block_pattern": r'func\s+(Test\w+|Benchmark\w+)\s*\(',
+    "assertion_pattern": r'(?:assert\.\w+|require\.\w+)\s*\(\s*\w+\s*,\s*(.+?)\)',
+}
+
+LANG_CSHARP = {
+    "name": "csharp",
+    "extensions": {".cs", ".csx"},
+    "exclude_patterns": [
+        r'/bin/', r'/obj/', r'\.dll$', r'\.exe$', r'\.nupkg$',
+    ],
+    "grep_includes": ["*.cs"],
+    "grep_excludes": ["bin", "obj", ".git"],
+    "sig_pattern": (
+        r'^[-+]\s*(?:public|protected|private|internal|static|virtual|override|async|\s)*'
+        r'(?:[\w<>\[\]?]+)\s+(\w+)\s*\(([^)]*)\)'
+    ),
+    "ret_pattern": (
+        r'^[-+]\s*(?:public|protected|private|internal|static|virtual|override|async|\s)*'
+        r'([\w<>\[\]?]+)\s+(\w+)\s*\('
+    ),
+    "import_pattern": r'using\s+([\w.]+)\s*;',
+    "component_pattern": None,
+    "export_patterns": [
+        r'(?:public|internal)\s+(?:partial\s+)?(?:class|interface|enum|record|struct)\s+(\w+)',
+        r'(?:public|internal)\s+(?:static\s+)?(?:[\w<>\[\]?]+)\s+(\w+)\s*\(',
+    ],
+    "enum_pattern": r'^\s*(\w+)\s*=\s*(\d+)',
+    "array_value_pattern": r'"(\w[\w\s]+\w)"',
+    "comment_prefixes": ("//", "*", "/*"),
+    "test_file_pattern": r'(?:Tests?|Spec)\.cs$',
+    "test_block_pattern": r'(?:\[(?:Test|Fact|Theory)\].*?)?(?:public|private)\s+(?:async\s+)?(?:Task\s+|void\s+)(\w+)\s*\(',
+    "assertion_pattern": r'(?:Assert\.\w+|Should\.\w+|Expect\.\w+)\s*\((.+?)\)',
+}
+
+# Registry — order matters only for tie-breaking; detection counts extensions.
+LANGUAGE_PROFILES = [LANG_JS, LANG_JAVA, LANG_PYTHON, LANG_GO, LANG_CSHARP]
 
 
-def should_exclude(filepath: str) -> bool:
-    return any(re.search(p, filepath) for p in EXCLUDE_PATTERNS)
+# ═══════════════════════════════════════════════════════════════════════════════
+# LANGUAGE DETECTION
+# ═══════════════════════════════════════════════════════════════════════════════
 
+def detect_languages(file_diffs: dict) -> list:
+    """Return list of matching language profiles sorted by file count (desc)."""
+    ext_counts = {}
+    for filepath in file_diffs:
+        ext = _file_ext(filepath)
+        ext_counts[ext] = ext_counts.get(ext, 0) + 1
+
+    profile_scores = []
+    for profile in LANGUAGE_PROFILES:
+        score = sum(ext_counts.get(e, 0) for e in profile["extensions"])
+        if score > 0:
+            profile_scores.append((score, profile))
+
+    profile_scores.sort(key=lambda x: x[0], reverse=True)
+    profiles = [p for _, p in profile_scores]
+
+    if not profiles:
+        # Fallback — return a minimal "generic" profile
+        profiles = [_generic_profile()]
+
+    return profiles
+
+
+def _file_ext(filepath: str) -> str:
+    return os.path.splitext(filepath)[1].lower()
+
+
+def _generic_profile() -> dict:
+    """Minimal profile that still produces diff_stats for unknown languages."""
+    return {
+        "name": "generic",
+        "extensions": set(),
+        "exclude_patterns": [r'\.lock$', r'dist/', r'build/'],
+        "grep_includes": [],
+        "grep_excludes": [".git"],
+        "sig_pattern": None,
+        "ret_pattern": None,
+        "import_pattern": None,
+        "component_pattern": None,
+        "export_patterns": [],
+        "enum_pattern": None,
+        "array_value_pattern": None,
+        "comment_prefixes": ("//", "#", "*"),
+        "test_file_pattern": None,
+        "test_block_pattern": None,
+        "assertion_pattern": None,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXCLUDE FILTER — union of all matched profiles
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_exclude_checker(profiles: list):
+    """Return a should_exclude(filepath) function combining all profiles."""
+    all_patterns = []
+    for p in profiles:
+        all_patterns.extend(p.get("exclude_patterns", []))
+    # Deduplicate
+    all_patterns = list(dict.fromkeys(all_patterns))
+    compiled = [re.compile(pat) for pat in all_patterns]
+
+    def _check(filepath: str) -> bool:
+        return any(rx.search(filepath) for rx in compiled)
+
+    return _check
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DIFF PARSING (language-agnostic)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def parse_diff(diff_text: str) -> dict:
     """Parse unified diff into per-file sections."""
@@ -57,7 +276,6 @@ def parse_diff(diff_text: str) -> dict:
         if line.startswith('diff --git'):
             if current_file:
                 files[current_file] = '\n'.join(current_lines)
-            # Extract b/ path
             match = re.search(r'b/(.+)$', line)
             current_file = match.group(1) if match else None
             current_lines = [line]
@@ -70,15 +288,12 @@ def parse_diff(diff_text: str) -> dict:
     return files
 
 
-def get_changed_files(file_diffs: dict) -> list:
-    """Return filtered list of changed files."""
+def get_changed_files(file_diffs: dict, should_exclude) -> list:
     return sorted(f for f in file_diffs if not should_exclude(f))
 
 
-def get_diff_stats(file_diffs: dict) -> dict:
-    """Compute lines added/removed and identify new files."""
-    added = 0
-    removed = 0
+def get_diff_stats(file_diffs: dict, should_exclude) -> dict:
+    added = removed = 0
     new_files = []
     deleted_files = []
 
@@ -104,34 +319,43 @@ def get_diff_stats(file_diffs: dict) -> dict:
     }
 
 
-def extract_signature_changes(file_diffs: dict) -> list:
-    """Detect function signature changes (params/return type)."""
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXTRACTION FUNCTIONS — driven by profile patterns
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _profile_for_file(filepath: str, profiles: list) -> dict:
+    """Return the best-matching profile for a filepath, or the first profile."""
+    ext = _file_ext(filepath)
+    for p in profiles:
+        if ext in p["extensions"]:
+            return p
+    return profiles[0]
+
+
+def extract_signature_changes(file_diffs: dict, profiles: list, should_exclude) -> list:
     changes = []
 
     for filepath, diff in file_diffs.items():
         if should_exclude(filepath):
+            continue
+        prof = _profile_for_file(filepath, profiles)
+        sig_pat = prof.get("sig_pattern")
+        if not sig_pat:
             continue
 
         old_sigs = {}
         new_sigs = {}
 
         for line in diff.splitlines():
-            # Match function/const arrow declarations
-            # Patterns: export const foo = (...) => | export function foo(...) | const foo = (...)
-            sig_match = re.search(
-                r'^[-+]\s*(?:export\s+)?(?:const|function|let|var)\s+'
-                r'(\w+)\s*(?::\s*\w+)?\s*=?\s*(?:<[^>]+>\s*)?\(([^)]*)\)',
-                line
-            )
-            if sig_match:
-                name = sig_match.group(1)
-                params = sig_match.group(2).strip()
+            m = re.search(sig_pat, line)
+            if m:
+                name = m.group(1)
+                params = m.group(2).strip() if m.lastindex >= 2 else ""
                 if line.startswith('-'):
                     old_sigs[name] = params
                 elif line.startswith('+'):
                     new_sigs[name] = params
 
-        # Find changed signatures
         for name in set(old_sigs) & set(new_sigs):
             if old_sigs[name] != new_sigs[name]:
                 changes.append({
@@ -141,118 +365,124 @@ def extract_signature_changes(file_diffs: dict) -> list:
                     "new_params": f"({new_sigs[name]})",
                 })
 
-    # Also detect return type changes via type annotations
-    for filepath, diff in file_diffs.items():
-        if should_exclude(filepath):
+        # Return type changes
+        ret_pat = prof.get("ret_pattern")
+        if not ret_pat:
             continue
 
-        old_returns = {}
-        new_returns = {}
-
+        old_ret = {}
+        new_ret = {}
         for line in diff.splitlines():
-            ret_match = re.search(
-                r'^[-+]\s*(?:export\s+)?(?:const|function)\s+(\w+).*\)\s*(?::\s*(.+?)\s*(?:=>|{|\{))',
-                line
-            )
-            if ret_match:
-                name = ret_match.group(1)
-                ret_type = ret_match.group(2).strip()
+            m = re.search(ret_pat, line)
+            if m:
+                # For Java-style the return type is group(1), name is group(2)
+                if prof["name"] in ("java", "csharp"):
+                    ret_type, name = m.group(1).strip(), m.group(2)
+                else:
+                    name, ret_type = m.group(1), m.group(2).strip()
                 if line.startswith('-'):
-                    old_returns[name] = ret_type
+                    old_ret[name] = ret_type
                 elif line.startswith('+'):
-                    new_returns[name] = ret_type
+                    new_ret[name] = ret_type
 
-        for name in set(old_returns) & set(new_returns):
-            if old_returns[name] != new_returns[name]:
-                # Check if already captured
+        for name in set(old_ret) & set(new_ret):
+            if old_ret[name] != new_ret[name]:
                 existing = [c for c in changes if c['function'] == name]
                 if existing:
-                    existing[0]['old_return'] = old_returns[name]
-                    existing[0]['new_return'] = new_returns[name]
+                    existing[0]['old_return'] = old_ret[name]
+                    existing[0]['new_return'] = new_ret[name]
                 else:
                     changes.append({
                         "function": name,
                         "file": os.path.basename(filepath),
-                        "old_return": old_returns[name],
-                        "new_return": new_returns[name],
+                        "old_return": old_ret[name],
+                        "new_return": new_ret[name],
                     })
 
     return changes
 
 
-def extract_removed_features(file_diffs: dict) -> list:
-    """Detect removed imports, component usages, and deleted code blocks."""
+def extract_removed_features(file_diffs: dict, profiles: list, should_exclude) -> list:
     removed = []
 
     for filepath, diff in file_diffs.items():
         if should_exclude(filepath):
             continue
+        prof = _profile_for_file(filepath, profiles)
         fname = os.path.basename(filepath)
+        added_lines = [l for l in diff.splitlines() if l.startswith('+')]
 
-        # Removed imports
         for line in diff.splitlines():
-            if line.startswith('-') and not line.startswith('---'):
-                import_match = re.search(r'import\s+.*\{([^}]+)\}.*from', line)
-                if import_match:
-                    names = [n.strip() for n in import_match.group(1).split(',')]
-                    # Check if any of these names are NOT re-added
-                    added_lines = [l for l in diff.splitlines() if l.startswith('+')]
+            if not line.startswith('-') or line.startswith('---'):
+                continue
+            clean = line[1:].strip()
+
+            # Imports
+            imp_pat = prof.get("import_pattern")
+            if imp_pat:
+                imp_m = re.search(imp_pat, clean)
+                if imp_m:
+                    # Handle multi-group patterns (JS destructured, Python from..import)
+                    names = []
+                    for g in imp_m.groups():
+                        if g:
+                            names.extend(n.strip() for n in g.split(','))
                     for name in names:
-                        if not any(name in al for al in added_lines):
+                        name = name.strip().rstrip(';')
+                        if name and not any(name in al for al in added_lines):
                             removed.append(f"{name} import removed from {fname}")
 
-                # Removed component usage in JSX
-                comp_match = re.search(r'<(\w+)[\s/>]', line[1:])
-                if comp_match:
-                    comp_name = comp_match.group(1)
-                    # Upper-case = likely a component, not HTML
+            # JSX components (JS/TS only)
+            comp_pat = prof.get("component_pattern")
+            if comp_pat:
+                comp_m = re.search(comp_pat, clean)
+                if comp_m:
+                    comp_name = comp_m.group(1)
                     if comp_name[0].isupper():
-                        added_lines = [l for l in diff.splitlines() if l.startswith('+')]
                         if not any(f'<{comp_name}' in al for al in added_lines):
                             removed.append(f"<{comp_name}> usage removed from {fname}")
 
-    # Deduplicate
     return list(dict.fromkeys(removed))
 
 
-def extract_new_status_values(file_diffs: dict) -> list:
-    """Detect new entries in enums, const objects, arrays, Records."""
+def extract_new_status_values(file_diffs: dict, profiles: list, should_exclude) -> list:
     new_values = []
 
     for filepath, diff in file_diffs.items():
         if should_exclude(filepath):
             continue
+        prof = _profile_for_file(filepath, profiles)
         fname = os.path.basename(filepath)
+        comment_pats = prof.get("comment_prefixes", ("//", "#", "*"))
 
         for line in diff.splitlines():
             if not line.startswith('+') or line.startswith('+++'):
                 continue
             clean = line[1:].strip()
-
-            # Pattern: [ENUM.VALUE]: 'color' or [ENUM.VALUE]: value
-            enum_match = re.search(r'\[(\w+\.\w+)\]\s*:\s*[\'"]?(\w+)', clean)
-            if enum_match:
-                new_values.append({
-                    "file": fname,
-                    "entry": enum_match.group(1),
-                    "value": enum_match.group(2),
-                })
+            if any(clean.startswith(c) for c in comment_pats):
                 continue
 
-            # Pattern: added to array/list (e.g., 'cancelled' added to status array)
-            arr_match = re.search(r"['\"](\w[\w\s]+\w)['\"]", clean)
-            if arr_match and not clean.startswith('//') and not clean.startswith('*'):
-                # Check if this is within an array context by checking surrounding removed lines
-                val = arr_match.group(1)
-                # Only flag if the line before was also from the same array (heuristic)
-                if re.search(r"[\[\],]", clean):
+            enum_pat = prof.get("enum_pattern")
+            if enum_pat:
+                em = re.search(enum_pat, clean)
+                if em:
+                    new_values.append({
+                        "file": fname,
+                        "entry": em.group(1),
+                        "value": em.group(2) if em.lastindex >= 2 else em.group(1),
+                    })
+                    continue
+
+            arr_pat = prof.get("array_value_pattern")
+            if arr_pat:
+                am = re.search(arr_pat, clean)
+                if am and re.search(r'[\[\],;]', clean):
                     new_values.append({
                         "file": fname,
                         "entry": "array/list",
-                        "value": val,
+                        "value": am.group(1),
                     })
 
-    # Deduplicate by entry+value
     seen = set()
     unique = []
     for v in new_values:
@@ -260,57 +490,57 @@ def extract_new_status_values(file_diffs: dict) -> list:
         if key not in seen:
             seen.add(key)
             unique.append(v)
-
     return unique
 
 
-def extract_test_changes(file_diffs: dict) -> dict:
-    """Analyze test file changes: modified assertions, removed/added test blocks."""
+def extract_test_changes(file_diffs: dict, profiles: list, should_exclude) -> dict:
     modified_assertions = []
     removed_tests = []
     added_tests = []
 
     for filepath, diff in file_diffs.items():
-        if not re.search(r'\.(test|spec)\.(tsx?|jsx?|js)$', filepath):
-            continue
         if should_exclude(filepath):
             continue
+        prof = _profile_for_file(filepath, profiles)
+        test_file_pat = prof.get("test_file_pattern")
+        if not test_file_pat or not re.search(test_file_pat, filepath):
+            continue
 
-        for line in diff.splitlines():
+        test_pat = prof.get("test_block_pattern")
+        assert_pat = prof.get("assertion_pattern")
+        diff_lines = diff.splitlines()
+        added_lines = [l for l in diff_lines if l.startswith('+')]
+        removed_lines = [l for l in diff_lines if l.startswith('-')]
+
+        for line in diff_lines:
             clean = line[1:].strip() if len(line) > 1 else ''
 
-            # Removed test blocks
-            if line.startswith('-'):
-                test_match = re.search(r"(?:it|test|describe)(?:\.each)?\s*\(\s*['\"`](.+?)['\"`]", clean)
-                if test_match:
-                    test_name = test_match.group(1)
-                    # Check if same test exists in added lines (just modified)
-                    added_lines = [l for l in diff.splitlines() if l.startswith('+')]
-                    if not any(test_name in al for al in added_lines):
-                        removed_tests.append(test_name)
+            if test_pat:
+                if line.startswith('-'):
+                    tm = re.search(test_pat, clean)
+                    if tm:
+                        test_name = next((g for g in tm.groups() if g), None)
+                        if test_name and not any(test_name in al for al in added_lines):
+                            removed_tests.append(test_name)
 
-            # Added test blocks
-            if line.startswith('+'):
-                test_match = re.search(r"(?:it|test|describe)\s*\(\s*['\"`](.+?)['\"`]", clean)
-                if test_match:
-                    test_name = test_match.group(1)
-                    removed_lines = [l for l in diff.splitlines() if l.startswith('-')]
-                    if not any(test_name in rl for rl in removed_lines):
-                        added_tests.append(test_name)
+                if line.startswith('+'):
+                    tm = re.search(test_pat, clean)
+                    if tm:
+                        test_name = next((g for g in tm.groups() if g), None)
+                        if test_name and not any(test_name in rl for rl in removed_lines):
+                            added_tests.append(test_name)
 
-            # Modified assertions (expect value changes)
-            if line.startswith('-'):
-                expect_match = re.search(r"expect\(.*\)\.to\w+\((.+)\)", clean)
-                if expect_match:
-                    old_val = expect_match.group(1).strip()
-                    # Find corresponding + line with same expect pattern
-                    for aline in diff.splitlines():
-                        if aline.startswith('+'):
+            if assert_pat and line.startswith('-'):
+                am = re.search(assert_pat, clean)
+                if am:
+                    old_val = next((g.strip() for g in am.groups() if g), None)
+                    if old_val:
+                        for aline in added_lines:
                             aclean = aline[1:].strip()
-                            aexpect = re.search(r"expect\(.*\)\.to\w+\((.+)\)", aclean)
-                            if aexpect:
-                                new_val = aexpect.group(1).strip()
-                                if old_val != new_val and _similar_context(clean, aclean):
+                            am2 = re.search(assert_pat, aclean)
+                            if am2:
+                                new_val = next((g.strip() for g in am2.groups() if g), None)
+                                if new_val and old_val != new_val and _similar_context(clean, aclean):
                                     modified_assertions.append(f"{old_val} → {new_val}")
                                     break
 
@@ -322,8 +552,6 @@ def extract_test_changes(file_diffs: dict) -> dict:
 
 
 def _similar_context(line_a: str, line_b: str) -> bool:
-    """Check if two lines are likely the same assertion modified."""
-    # Strip values and compare structure
     a = re.sub(r"['\"].*?['\"]", 'X', line_a)
     b = re.sub(r"['\"].*?['\"]", 'X', line_b)
     a = re.sub(r'\d+', 'N', a)
@@ -331,70 +559,81 @@ def _similar_context(line_a: str, line_b: str) -> bool:
     return a == b
 
 
-def find_blast_radius(file_diffs: dict, repo_path: str, changed_files: list) -> list:
-    """Find callers of changed exports that are NOT in the diff."""
+def find_blast_radius(file_diffs: dict, repo_path: str, changed_files: list,
+                      profiles: list, should_exclude) -> list:
     if not repo_path or not os.path.isdir(repo_path):
         return []
 
-    # Extract exported names from changed files
+    # Collect exported names using per-file profile
     exported_names = set()
     for filepath, diff in file_diffs.items():
         if should_exclude(filepath):
             continue
+        prof = _profile_for_file(filepath, profiles)
+        export_pats = prof.get("export_patterns", [])
+
         for line in diff.splitlines():
-            # Both added and removed lines indicate the export was touched
-            if line.startswith('+') or line.startswith('-'):
-                clean = line[1:].strip()
-                # export const/function name
-                exp_match = re.search(r'export\s+(?:const|function|type|interface|let|var)\s+(\w+)', clean)
-                if exp_match:
-                    exported_names.add(exp_match.group(1))
-                # export { Name }
-                exp_brace = re.search(r'export\s+\{([^}]+)\}', clean)
-                if exp_brace:
-                    for n in exp_brace.group(1).split(','):
-                        name = n.strip().split(' as ')[0].strip()
-                        if name:
-                            exported_names.add(name)
+            if not (line.startswith('+') or line.startswith('-')):
+                continue
+            clean = line[1:].strip()
+            for pat in export_pats:
+                em = re.search(pat, clean)
+                if em:
+                    for g in em.groups():
+                        if g:
+                            for n in g.split(','):
+                                name = n.strip().split(' as ')[0].strip()
+                                if name and name[0].isalpha():
+                                    exported_names.add(name)
 
     if not exported_names:
         return []
 
-    # Build grep pattern for all exported names
+    # Build grep args from all profiles
+    include_args = []
+    exclude_args = []
+    seen_inc = set()
+    seen_exc = set()
+    for prof in profiles:
+        for inc in prof.get("grep_includes", []):
+            if inc not in seen_inc:
+                include_args.extend(["--include", inc])
+                seen_inc.add(inc)
+        for exc in prof.get("grep_excludes", []):
+            if exc not in seen_exc:
+                exclude_args.extend([f"--exclude-dir={exc}"])
+                seen_exc.add(exc)
+
+    if not include_args:
+        return []
+
     pattern = '|'.join(re.escape(n) for n in exported_names)
     changed_basenames = {os.path.basename(f) for f in changed_files}
 
     blast = []
     try:
+        cmd = ['grep', '-rl', '-E', pattern] + include_args + exclude_args
         result = subprocess.run(
-            ['grep', '-rl', '-E', pattern, '--include=*.ts', '--include=*.tsx',
-             '--include=*.js', '--include=*.jsx', '--exclude-dir=node_modules',
-             '--exclude-dir=dist', '--exclude-dir=build', '--exclude-dir=.git'],
-            capture_output=True, text=True, cwd=repo_path, timeout=30
+            cmd, capture_output=True, text=True, cwd=repo_path, timeout=30
         )
         if result.returncode == 0:
             for hit_file in result.stdout.strip().splitlines():
                 hit_base = os.path.basename(hit_file)
-                # Skip files already in the diff
                 if hit_base not in changed_basenames and hit_file not in changed_files:
-                    # Confirm it actually imports/uses the name
                     for name in exported_names:
                         try:
-                            grep2 = subprocess.run(
+                            g2 = subprocess.run(
                                 ['grep', '-l', name, hit_file],
-                                capture_output=True, text=True, cwd=repo_path, timeout=5
+                                capture_output=True, text=True,
+                                cwd=repo_path, timeout=5
                             )
-                            if grep2.returncode == 0:
-                                blast.append({
-                                    "file": hit_file,
-                                    "uses": name,
-                                })
+                            if g2.returncode == 0:
+                                blast.append({"file": hit_file, "uses": name})
                         except subprocess.TimeoutExpired:
                             continue
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
 
-    # Deduplicate and group by file
     grouped = {}
     for item in blast:
         f = item['file']
@@ -402,12 +641,14 @@ def find_blast_radius(file_diffs: dict, repo_path: str, changed_files: list) -> 
             grouped[f] = {"file": f, "uses": []}
         if item['uses'] not in grouped[f]['uses']:
             grouped[f]['uses'].append(item['uses'])
-
     return list(grouped.values())
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def read_commits(commits_file: str) -> list:
-    """Read JSONL commits file."""
     commits = []
     if not commits_file or not os.path.exists(commits_file):
         return commits
@@ -421,6 +662,10 @@ def read_commits(commits_file: str) -> list:
                     pass
     return commits
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
     parser = argparse.ArgumentParser(description='Enhanced PR analysis extractor')
@@ -440,27 +685,33 @@ def main():
 
     diff_text = diff_path.read_text(encoding='utf-8', errors='replace')
     file_diffs = parse_diff(diff_text)
-    changed_files = get_changed_files(file_diffs)
+
+    # Detect language(s) and build exclude filter
+    profiles = detect_languages(file_diffs)
+    lang_names = [p["name"] for p in profiles]
+    print(f"[*] Detected language(s): {', '.join(lang_names)}")
+
+    should_exclude = build_exclude_checker(profiles)
+    changed_files = get_changed_files(file_diffs, should_exclude)
 
     print(f"[*] Analyzing {len(changed_files)} source files (filtered from {len(file_diffs)} total)...")
 
     # Run all extractions
-    stats = get_diff_stats(file_diffs)
-    signatures = extract_signature_changes(file_diffs)
-    removed = extract_removed_features(file_diffs)
-    new_statuses = extract_new_status_values(file_diffs)
-    tests = extract_test_changes(file_diffs)
-    blast = find_blast_radius(file_diffs, args.repo, changed_files)
+    stats = get_diff_stats(file_diffs, should_exclude)
+    signatures = extract_signature_changes(file_diffs, profiles, should_exclude)
+    removed = extract_removed_features(file_diffs, profiles, should_exclude)
+    new_statuses = extract_new_status_values(file_diffs, profiles, should_exclude)
+    tests = extract_test_changes(file_diffs, profiles, should_exclude)
+    blast = find_blast_radius(file_diffs, args.repo, changed_files, profiles, should_exclude)
     commits = read_commits(args.commits)
 
-    # Parse comma-separated JIRA IDs
     jira_ids_list = [jid.strip() for jid in args.jira.split(',')]
 
-    # Build summary
     summary = {
         "service": args.service,
         "jira_id": jira_ids_list if len(jira_ids_list) > 1 else jira_ids_list[0],
         "jira_ids_analyzed": jira_ids_list,
+        "languages_detected": lang_names,
         "changed_files": changed_files,
         "signature_changes": signatures,
         "removed_features": removed,
@@ -471,21 +722,16 @@ def main():
         "commits": commits,
     }
 
-    # Write output
     os.makedirs(args.out, exist_ok=True)
-    out_path = os.path.join(args.out, 'summary.json')
-    with open(out_path, 'w') as f:
+    with open(os.path.join(args.out, 'summary.json'), 'w') as f:
         json.dump(summary, f, indent=2)
 
-    # Copy diff (filtered — exclude lockfiles)
-    filtered_diff_path = os.path.join(args.out, 'changes.diff')
-    with open(filtered_diff_path, 'w', encoding='utf-8') as f:
+    with open(os.path.join(args.out, 'changes.diff'), 'w', encoding='utf-8') as f:
         for filepath, diff_content in file_diffs.items():
             if not should_exclude(filepath):
                 f.write(diff_content)
                 f.write('\n')
 
-    # Print summary
     print(f"[OK] {args.service}: {len(changed_files)} files, {len(signatures)} signature changes, "
           f"{len(removed)} removals, {len(new_statuses)} new values, "
           f"{len(blast)} blast-radius files, "

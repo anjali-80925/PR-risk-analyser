@@ -1,140 +1,141 @@
-@Library(['GlobalJenkinsLibrary@2', 'ContentJenkinsLibrary']) _
+/* ── PR Risk Analyser — Jenkins Pipeline ───────────────────────────────────
+ * Project-agnostic pipeline.  Override defaults via Jenkins parameters or
+ * environment variables to reuse across teams.
+ *
+ * SETUP FOR YOUR PROJECT:
+ *   1. Copy this file into your Jenkins job config
+ *   2. Edit the @Library line below to match YOUR Jenkins shared libraries
+ *      (or remove it entirely if your Jenkins doesn't use shared libs)
+ *   3. Edit AGENT_LABEL default to match your available agents
+ *   4. Ensure config.env exists in the repo (run: bash scripts/init.sh)
+ *
+ * Required:  JIRA_IDS parameter (comma-separated, e.g. PROJ-111,PROJ-222)
+ * Optional:  AGENT_LABEL, TIMEOUT_MINUTES — configurable per instance.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+// ── Shared Libraries ─────────────────────────────────────────────────────────
+// Replace with your project's Jenkins shared libraries, or remove if unused.
+// Examples:
+//   @Library(['MyOrgLibrary@main']) _
+//   @Library(['GlobalJenkinsLibrary@2', 'TeamLibrary']) _
+@Library(['GlobalJenkinsLibrary@2']) _
 
 pipeline {
   parameters {
     string(
       name: 'JIRA_IDS',
-      description: 'Comma-separated JIRA ticket IDs (e.g., DBCCPMCMS-40662,DBCCPMCMS-40663,DBCCPMCMS-40664)',
+      description: 'Comma-separated JIRA ticket IDs (e.g., PROJ-111,PROJ-222)',
       defaultValue: '',
       trim: true
     )
+    string(
+      name: 'AGENT_LABEL',
+      description: 'Jenkins agent label to run on (edit default for your infra)',
+      defaultValue: 'ubuntu',
+      trim: true
+    )
+    string(
+      name: 'TIMEOUT_MINUTES',
+      description: 'Pipeline timeout in minutes',
+      defaultValue: '15',
+      trim: true
+    )
   }
-  
+
   agent {
-    label 'ubuntu_node-22'  // Ubuntu agent with Git, Python 3
+    label params.AGENT_LABEL ?: 'ubuntu'
   }
-  
+
   options {
     timestamps()
-    timeout(time: 15, unit: 'MINUTES')
+    timeout(time: (params.TIMEOUT_MINUTES ?: '15') as int, unit: 'MINUTES')
     buildDiscarder(logRotator(numToKeepStr: '30'))
   }
-  
+
   stages {
     stage('Validate Input') {
       steps {
         script {
-          // Validate JIRA IDs format
-          if (!params.JIRA_IDS || params.JIRA_IDS.isEmpty()) {
-            error("❌ JIRA_IDS parameter is empty. Please provide comma-separated JIRA IDs (e.g., DBCCPMCMS-40662,DBCCPMCMS-40663)")
+          if (!params.JIRA_IDS?.trim()) {
+            error('JIRA_IDS parameter is empty. Provide comma-separated IDs (e.g., PROJ-111,PROJ-222)')
           }
-          
-          // Split and validate each ID
-          def ids = params.JIRA_IDS.split(',').collect { it.trim() }
-          
+          def ids = params.JIRA_IDS.split(',').collect { it.trim() }.findAll { it }
           ids.each { id ->
             if (!id.matches('[A-Z]+-[0-9]+')) {
-              error("❌ Invalid JIRA ID format: ${id}. Expected format: ABC-123 (letters-numbers)")
+              error("Invalid JIRA ID format: ${id}. Expected LETTERS-NUMBERS (e.g., PROJ-123)")
             }
           }
-          
-          echo "✅ Validated ${ids.size()} JIRA ID(s): ${ids.join(', ')}"
+          echo "Validated ${ids.size()} JIRA ID(s): ${ids.join(', ')}"
         }
       }
     }
-    
+
     stage('Detect Services') {
       steps {
-        script {
-          echo "🔍 Detecting services with changes for: ${params.JIRA_IDS}"
-          
-          sh '''
-            bash scripts/detect_services.sh "${JIRA_IDS}"
-            echo ""
-            echo "=== Services with changes ==="
-            cat pr-analysis/detected_services.txt 2>/dev/null || echo "No services matched"
-          '''
-        }
+        sh 'bash scripts/detect_services.sh "${JIRA_IDS}"'
       }
     }
-    
+
     stage('Run Analysis') {
       steps {
-        script {
-          echo "📊 Running PR analysis for all detected services in parallel..."
-          
-          sh '''
-            bash scripts/run_all_analyses.sh "${JIRA_IDS}"
-            echo ""
-            echo "✅ Analysis complete!"
-          '''
-        }
+        sh 'bash scripts/run_all_analyses.sh "${JIRA_IDS}"'
       }
     }
-    
+
     stage('Verify Results') {
       steps {
         sh '''
-          echo "📁 Summary.json files generated:"
-          find pr-analysis -name "summary.json" -type f -exec ls -lh {} \\;
-          
+          echo "=== Generated Artifacts ==="
           echo ""
-          echo "Diff files:"
+          echo "summary.json files:"
+          find pr-analysis -name "summary.json" -type f -exec ls -lh {} \\;
+          echo ""
+          echo "changes.diff files:"
           find pr-analysis -name "changes.diff" -type f -exec ls -lh {} \\;
-          
           echo ""
           echo "Detected services:"
-          cat pr-analysis/detected_services.txt 2>/dev/null || echo "None"
+          cat pr-analysis/detected_services.txt 2>/dev/null || echo "(none)"
         '''
       }
     }
   }
-  
+
   post {
     always {
-      script {
-        // Archive all analysis artifacts
-        archiveArtifacts(
-          artifacts: 'pr-analysis/*/summary.json,pr-analysis/*/changes.diff,pr-analysis/detected_services.txt,pr-analysis/*/run.log',
-          allowEmptyArchive: true,
-          fingerprint: true
-        )
-        
-        sh '''
-          echo ""
-          echo "================================================"
-          echo "📦 ARTIFACTS READY FOR DOWNLOAD"
-          echo "================================================"
-          echo "Build URL: ${BUILD_URL}"
-          echo "Artifacts: ${BUILD_URL}artifact/pr-analysis/"
-          echo ""
-          echo "Next step:"
-          echo "1. Download summary.json files from artifacts"
-          echo "2. Provide them to Copilot:"
-          echo "   'Act as PR analyser'"
-          echo "   Source JIRA: <first_id_from_JIRA_IDS>"
-          echo "   Destination JIRA: <where_to_post_results>"
-          echo "3. Copilot will generate risk analysis"
-          echo "================================================"
-        '''
-      }
+      archiveArtifacts(
+        artifacts: 'pr-analysis/*/summary.json,pr-analysis/*/changes.diff,pr-analysis/detected_services.txt,pr-analysis/*/run.log',
+        allowEmptyArchive: true,
+        fingerprint: true
+      )
+      sh '''
+        echo ""
+        echo "================================================"
+        echo " ARTIFACTS READY FOR DOWNLOAD"
+        echo "================================================"
+        echo "Build URL : ${BUILD_URL}"
+        echo "Artifacts : ${BUILD_URL}artifact/pr-analysis/"
+        echo ""
+        echo "Next steps:"
+        echo "  1. Open VS Code Copilot Chat"
+        echo "  2. Say: 'Act as PR analyser'"
+        echo "  3. Provide source JIRA and destination JIRA"
+        echo "================================================"
+      '''
     }
-    
+
     failure {
-      script {
-        sh '''
-          echo "❌ ANALYSIS FAILED"
-          echo ""
-          echo "Error logs:"
-          find pr-analysis -name "run.log" -type f -exec echo "=== {} ===" \\; -exec tail -20 {} \\;
-          echo ""
-          echo "Troubleshooting:"
-          echo "1. Verify JIRA IDs are valid format (e.g., DBCCPMCMS-40662)"
-          echo "2. Verify commits exist in repos matching the JIRA IDs"
-          echo "3. Check network/SSH connectivity to Bitbucket"
-          echo "4. Verify config.env has correct REPO_BASE_URL and SERVICES list"
-        '''
-      }
+      sh '''
+        echo "ANALYSIS FAILED"
+        echo ""
+        echo "Error logs:"
+        find pr-analysis -name "run.log" -type f -exec echo "--- {} ---" \\; -exec tail -20 {} \\;
+        echo ""
+        echo "Troubleshooting:"
+        echo "  1. Verify JIRA ID format (LETTERS-NUMBERS)"
+        echo "  2. Verify commits exist for those IDs"
+        echo "  3. Check SSH/network access to repositories"
+        echo "  4. Verify config.env is correct"
+      '''
     }
   }
 }

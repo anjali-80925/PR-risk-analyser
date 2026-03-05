@@ -6,13 +6,14 @@ set -uo pipefail
 
 JIRA_IDS=${1:?"Usage: ./scripts/run_all_analyses.sh <JIRA_ID_1,JIRA_ID_2,...>"}
 
+# ── Bootstrap ─────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/lib/load_config.sh"
+source "$SCRIPT_DIR/lib/load_config.sh"   # also pulls in common.sh
 
-DETECTED_FILE="$WORKSPACE_ROOT/pr-analysis/detected_services.txt"
+DETECTED_FILE="$ANALYSIS_DIR/detected_services.txt"
 
 if [[ ! -f "$DETECTED_FILE" || ! -s "$DETECTED_FILE" ]]; then
-  echo "❌ $DETECTED_FILE missing or empty. Run detect_services.sh first."
+  log_error "$DETECTED_FILE missing or empty. Run detect_services.sh first."
   exit 1
 fi
 
@@ -52,8 +53,8 @@ for SERVICE in "${SERVICES[@]}"; do
     fi
   done
 
-  LOG_FILE="$WORKSPACE_ROOT/pr-analysis/$SERVICE/run.log"
-  mkdir -p "$WORKSPACE_ROOT/pr-analysis/$SERVICE"
+  LOG_FILE="$ANALYSIS_DIR/$SERVICE/run.log"
+  mkdir -p "$ANALYSIS_DIR/$SERVICE"
   bash "$SCRIPT_DIR/run_pr_analysis.sh" "$SERVICE" "$JIRA_IDS" > "$LOG_FILE" 2>&1 &
   PIDS+=($!)
   LOGS+=("$LOG_FILE")
@@ -66,23 +67,20 @@ echo "⏳ Waiting for all analyses to complete..."
 echo ""
 
 # ── Collect results ───────────────────────────────────────────────────────────
-# Re-read from detected file to preserve full order for reporting
 mapfile -t ALL_SERVICES < "$DETECTED_FILE"
 FAILED=()
 SUCCEEDED=()
 
-# Wait for any remaining PIDs
 for PID in "${PIDS[@]}"; do
   wait "$PID" 2>/dev/null || true
 done
 
-# Check results by summary.json existence
 for SERVICE in "${ALL_SERVICES[@]}"; do
-  if [[ -f "$WORKSPACE_ROOT/pr-analysis/$SERVICE/summary.json" ]]; then
-    echo "  ✅ $SERVICE — done"
+  if [[ -f "$ANALYSIS_DIR/$SERVICE/summary.json" ]]; then
+    log_ok "$SERVICE — done"
     SUCCEEDED+=("$SERVICE")
   else
-    echo "  ❌ $SERVICE — FAILED (see pr-analysis/$SERVICE/run.log)"
+    log_error "$SERVICE — FAILED (see pr-analysis/$SERVICE/run.log)"
     FAILED+=("$SERVICE")
   fi
 done
@@ -96,11 +94,11 @@ if [[ ${#FAILED[@]} -gt 0 ]]; then
   echo ""
   echo "Failed services:"
   for SVC in "${FAILED[@]}"; do
-    echo "  ❌ $SVC"
-    tail -3 "$WORKSPACE_ROOT/pr-analysis/$SVC/run.log" 2>/dev/null | sed 's/^/     /'
+    log_error "$SVC"
+    tail -3 "$ANALYSIS_DIR/$SVC/run.log" 2>/dev/null | sed 's/^/     /'
   done
   exit 1
 fi
 
-echo "✅ All ${#ALL_SERVICES[@]} service(s) analysed successfully."
+log_ok "All ${#ALL_SERVICES[@]} service(s) analysed successfully."
 echo "========================================"

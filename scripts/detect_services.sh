@@ -7,61 +7,24 @@ set -uo pipefail
 
 JIRA_IDS=${1:?"Usage: ./scripts/detect_services.sh <JIRA_ID_1,JIRA_ID_2,...>"}
 
-# Parse comma-separated IDs into array
-IFS=',' read -ra JIRA_ARRAY <<< "$JIRA_IDS"
-
-# Validate format for each ID
-for JID in "${JIRA_ARRAY[@]}"; do
-  if ! [[ "$JID" =~ ^[A-Z]+-[0-9]+$ ]]; then
-    echo "❌ Invalid JIRA ID format: $JID (expected: ABC-123)"
-    exit 1
-  fi
-done
-
+# ── Bootstrap ─────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/lib/load_config.sh"
+source "$SCRIPT_DIR/lib/load_config.sh"   # also pulls in common.sh
 
-OUT_FILE="$WORKSPACE_ROOT/pr-analysis/detected_services.txt"
-CACHE_DIR="$WORKSPACE_ROOT/pr-analysis/.cache"
-mkdir -p "$CACHE_DIR" "$(dirname "$OUT_FILE")"
+parse_jira_ids "$JIRA_IDS"
+ensure_dirs
+cleanup_analysis
 
-# ── Clean up old analysis results (keep cache for speed) ────────────────────
-echo "🧹 Cleaning up old analysis results..."
-find "$WORKSPACE_ROOT/pr-analysis" -maxdepth 1 -type d ! -name ".cache" -exec rm -rf {} + 2>/dev/null || true
-rm -f "$OUT_FILE" 2>/dev/null || true
+OUT_FILE="$ANALYSIS_DIR/detected_services.txt"
 
 echo ""
 echo "========================================"
-echo " Service Detection for JIRA IDs: ${JIRA_ARRAY[@]}"
+echo " Service Detection for JIRA IDs: ${JIRA_ARRAY[*]}"
 echo "========================================"
 echo ""
 
 # ── Resolve service list from config ──────────────────────────────────────────
-SERVICE_ARRAY=()
-
-if [[ "$CFG_SVC_MODE" == "auto" ]]; then
-  # Auto-discover: find .git directories in workspace
-  for DIR in "$WORKSPACE_ROOT"/*/; do
-    DIRNAME=$(basename "$DIR")
-    if [[ -d "$DIR/.git" && "$DIRNAME" != "pr-analysis" && "$DIRNAME" != "scripts" && "$DIRNAME" != ".github" && "$DIRNAME" != ".vscode" ]]; then
-      SERVICE_ARRAY+=("$DIRNAME")
-    fi
-  done
-  # If no repos cloned yet in auto mode, fall back to ls-remote scan of common names
-  if [[ ${#SERVICE_ARRAY[@]} -eq 0 && ${#CFG_SERVICES[@]} -gt 0 ]]; then
-    SERVICE_ARRAY=("${CFG_SERVICES[@]}")
-  fi
-else
-  # Manual mode: use services from config
-  SERVICE_ARRAY=("${CFG_SERVICES[@]}")
-fi
-
-if [[ ${#SERVICE_ARRAY[@]} -eq 0 ]]; then
-  echo "❌ No services configured. Run: bash scripts/init.sh"
-  exit 1
-fi
-
-REPO_BASE_URL="$CFG_REPO_BASE_URL"
+resolve_services   # → SERVICE_LIST[]
 
 # ── Temp dir for parallel results ─────────────────────────────────────────────
 TMPDIR_RESULTS=$(mktemp -d)
@@ -70,8 +33,9 @@ trap "rm -rf $TMPDIR_RESULTS" EXIT
 check_service() {
   local SERVICE="$1"
   local RESULT_FILE="$TMPDIR_RESULTS/$SERVICE.match"
-  local REPO_URL="$REPO_BASE_URL/$SERVICE.git"
-  local LOCAL_REPO="$WORKSPACE_ROOT/$SERVICE"
+  local REPO_URL
+  REPO_URL=$(repo_url_for "$SERVICE")
+  local LOCAL_REPO="$SERVICE_REPOS_DIR/$SERVICE"
   local CACHE_FILE="$CACHE_DIR/${SERVICE}.refs"
 
   # ── Layer 1: git ls-remote with configurable cache ────────────────────────
@@ -101,18 +65,10 @@ check_service() {
     fi
   done
 
-  # ── Layer 2: Local commit search ────────────────────────────────────────────
-  # Auto-clone if missing (needed for commit search and later analysis)
-  if [[ ! -d "$LOCAL_REPO/.git" ]]; then
-    echo "  📦 $SERVICE — cloning (first run)..."
-    git clone --quiet "$REPO_URL" "$LOCAL_REPO" &>/dev/null || true
-  else
-    # Fetch latest refs so we don't miss recent commits
-    git -C "$LOCAL_REPO" fetch --all --prune --quiet &>/dev/null || true
-  fi
+  # ── Layer 2: Local commit search ──────────────────────────────────────────
+  ensure_repo "$SERVICE" --quiet || true
 
   if [[ -d "$LOCAL_REPO/.git" ]]; then
-    # Search for ANY JIRA ID in commits
     for JID in "${JIRA_ARRAY[@]}"; do
       if git -C "$LOCAL_REPO" log --all --oneline --grep="$JID" -1 2>/dev/null | grep -q .; then
         echo "$SERVICE" > "$RESULT_FILE"
@@ -132,10 +88,10 @@ check_service() {
 
 # ── Launch all checks in parallel ─────────────────────────────────────────────
 PIDS=()
-echo "🔍 Scanning ${#SERVICE_ARRAY[@]} services in parallel..."
+echo "🔍 Scanning ${#SERVICE_LIST[@]} services in parallel..."
 echo ""
 
-for SERVICE in "${SERVICE_ARRAY[@]}"; do
+for SERVICE in "${SERVICE_LIST[@]}"; do
   check_service "$SERVICE" &
   PIDS+=($!)
 done
@@ -146,10 +102,10 @@ done
 
 # ── Collect results ───────────────────────────────────────────────────────────
 MATCHED=()
-for SERVICE in "${SERVICE_ARRAY[@]}"; do
+for SERVICE in "${SERVICE_LIST[@]}"; do
   if [[ -f "$TMPDIR_RESULTS/$SERVICE.match" ]]; then
     MATCHED+=("$SERVICE")
-    echo "  ✅ $SERVICE — INCLUDED"
+    log_ok "$SERVICE — INCLUDED"
   else
     echo "  ⬜ $SERVICE — not matched"
   fi
@@ -159,15 +115,15 @@ echo ""
 echo "========================================"
 
 if [[ ${#MATCHED[@]} -eq 0 ]]; then
-  echo "⚠️  No services matched any JIRA ID: ${JIRA_ARRAY[@]}"
+  log_warn "No services matched any JIRA ID: ${JIRA_ARRAY[*]}"
   exit 1
 fi
 
 printf '%s\n' "${MATCHED[@]}" > "$OUT_FILE"
 
 echo ""
-echo "✅ Matched ${#MATCHED[@]} service(s):"
+log_ok "Matched ${#MATCHED[@]} service(s):"
 printf '  - %s\n' "${MATCHED[@]}"
 echo ""
-echo "📄 Results saved to: $OUT_FILE"
+log_info "Results saved to: $OUT_FILE"
 echo "========================================"

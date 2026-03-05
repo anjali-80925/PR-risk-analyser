@@ -1,32 +1,39 @@
 #!/bin/bash
-# ── Shared config loader ─────────────────────────────────────────────────────
-# Pure bash — sources config.env into shell variables. No Python needed.
-# Usage: source "$SCRIPT_DIR/lib/load_config.sh"
+# ── PR Risk Analyser — Config Loader ─────────────────────────────────────────
+# Parses config.env into CFG_* variables.  Sources common.sh for shared paths.
+# Usage: source "$SCRIPTS_DIR/lib/load_config.sh"
+#        (common.sh must be sourced first, or will be auto-sourced here)
 
-_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_DIR="$(cd "$_LIB_DIR/.." && pwd)"
-WORKSPACE_ROOT="$(dirname "$SCRIPT_DIR")"
+# ── Auto-source common.sh if not already loaded ──────────────────────────────
+_LC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -z "${_COMMON_SH_LOADED:-}" ]]; then
+  source "$_LC_DIR/common.sh"
+fi
+
+# ── Guard against double-sourcing ─────────────────────────────────────────────
+[[ -n "${_LOAD_CONFIG_SH_LOADED:-}" ]] && return 0
+_LOAD_CONFIG_SH_LOADED=1
+
+# ── Read config.env ───────────────────────────────────────────────────────────
 CONFIG_FILE="$WORKSPACE_ROOT/config.env"
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "❌ No config.env found in workspace root."
-  echo "   Run:  bash scripts/init.sh"
+  log_error "No config.env found in workspace root."
+  log_info  "Run:  bash scripts/init.sh"
   exit 1
 fi
 
 # Source the .env file (skip comments and blank lines)
 set -a
 while IFS='=' read -r key value; do
-  # Skip comments and empty lines
   [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
-  # Trim whitespace
   key=$(echo "$key" | xargs)
   value=$(echo "$value" | xargs)
   export "$key=$value"
 done < "$CONFIG_FILE"
 set +a
 
-# Map .env names to CFG_* variables used by scripts
+# ── Map raw env names → CFG_* variables ───────────────────────────────────────
 CFG_GIT_PROVIDER="${GIT_PROVIDER:-bitbucket-server}"
 CFG_REPO_BASE_URL="${REPO_BASE_URL:?REPO_BASE_URL not set in config.env}"
 CFG_SVC_MODE="${SERVICE_DISCOVERY_MODE:-manual}"

@@ -1,15 +1,11 @@
 # ── PR Analysis output (regenerated each run) ────────────────────────────────
-pr-analysis/*/summary.json
-pr-analysis/*/changes.diff
-pr-analysis/*/run.log
-pr-analysis/.cache/
-pr-analysis/detected_services.txt
+pr-analysis/
 
-# ── Cloned service repos (auto-cloned on first analysis) ─────────────────────
-# Add your service repo names here so they aren't committed
-# Example:
-# my-service-a/
-# my-service-b/
+# ── Project config (generated per-team by scripts/init.sh) ───────────────────
+config.env
+
+# ── Cloned service repos cache ────────────────────────────────────────────────
+.service-repos/
 
 # ── Environment ──────────────────────────────────────────────────────────────
 .env
