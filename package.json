@@ -1,0 +1,12 @@
+{
+  "name": "qa-pr-risk-analyser",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cross-service PR risk analysis tool for QA teams",
+  "scripts": {
+    "setup": "bash scripts/init.sh",
+    "detect": "bash scripts/detect_services.sh",
+    "analyze": "bash scripts/run_all_analyses.sh",
+    "clean": "bash -c \"rm -rf pr-analysis/*/summary.json pr-analysis/*/changes.diff pr-analysis/*/run.log pr-analysis/.cache pr-analysis/detected_services.txt\""
+  }
+}
