@@ -43,39 +43,22 @@ COMMITS_TMP=$(mktemp)
 trap "rm -f $AGG_DIFF_TMP $COMMITS_TMP" EXIT
 
 # ── Determine diff range ──────────────────────────────────────────────────────
-OLDEST="${COMMITS[0]}"
-NEWEST="${COMMITS[-1]}"
+# For multiple commits (esp. on diverged branches), generate diff for EACH commit
+# relative to its parent, then combine.  This ensures all changes are captured.
 
-PARENTS=$(git -C "$LOCAL_REPO" rev-parse "${NEWEST}^@" 2>/dev/null | wc -l | tr -d ' ')
-IS_MERGE=false
-[[ "$PARENTS" -gt 1 ]] && IS_MERGE=true
-
-if [[ "$IS_MERGE" == true ]]; then
-  DIFF_FROM=$(git -C "$LOCAL_REPO" rev-parse "${NEWEST}^1" 2>/dev/null)
-  DIFF_TO="$NEWEST"
-  log_info "Merge commit detected — diffing parent1 → merge"
+if [[ ${#COMMITS[@]} -eq 1 ]]; then
+  # Single commit: diff against parent
+  SINGLE_COMMIT="${COMMITS[0]}"
+  log_step "Generating unified diff for single commit"
+  git -C "$LOCAL_REPO" diff "${SINGLE_COMMIT}^" "$SINGLE_COMMIT" > "$AGG_DIFF_TMP" 2>/dev/null || true
 else
-  DEFAULT_BRANCH=$(git -C "$LOCAL_REPO" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
-    | sed 's|refs/remotes/origin/||' || echo "main")
-
-  DIFF_FROM=$(git -C "$LOCAL_REPO" merge-base "origin/$DEFAULT_BRANCH" "$NEWEST" 2>/dev/null || echo "")
-
-  if [[ -z "$DIFF_FROM" ]]; then
-    DIFF_FROM=$(git -C "$LOCAL_REPO" rev-parse "${OLDEST}^" 2>/dev/null || echo "$OLDEST")
-  fi
-  DIFF_TO="$NEWEST"
-
-  if [[ "$DIFF_FROM" == "$DIFF_TO" ]]; then
-    DIFF_FROM=$(git -C "$LOCAL_REPO" rev-parse "${NEWEST}^" 2>/dev/null || echo "$NEWEST")
-    log_info "Merge-base = tip — falling back to parent"
-  fi
+  # Multiple commits: collect diffs from each commit individually, combine
+  log_step "Collecting diffs from ${#COMMITS[@]} commits"
+  > "$AGG_DIFF_TMP"  # Clear file
+  for COMMIT in "${COMMITS[@]}"; do
+    git -C "$LOCAL_REPO" diff "${COMMIT}^" "$COMMIT" >> "$AGG_DIFF_TMP" 2>/dev/null || true
+  done
 fi
-
-log_info "Range: ${DIFF_FROM:0:10} → ${DIFF_TO:0:10}"
-
-# ── Generate unified diff ────────────────────────────────────────────────────
-log_step "Generating unified diff"
-git -C "$LOCAL_REPO" diff -W "$DIFF_FROM" "$DIFF_TO" > "$AGG_DIFF_TMP" 2>/dev/null || true
 
 if [[ ! -s "$AGG_DIFF_TMP" ]]; then
   log_warn "Empty diff — nothing to analyse"
