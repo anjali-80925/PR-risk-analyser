@@ -26,7 +26,7 @@ ensure_repo "$SERVICE" || exit 1
 log_step "Searching commits"
 
 mapfile -t COMMITS < <(
-  git -C "$LOCAL_REPO" log --all --grep="$GREP_PATTERN" --pretty=%H --reverse 2>/dev/null \
+  git -C "$LOCAL_REPO" log --all --extended-regexp --grep="$GREP_PATTERN" --pretty=%H --reverse 2>/dev/null \
     | awk '!seen[$0]++'
 )
 
@@ -84,7 +84,7 @@ fi
 
 # ── Commit metadata (single log call) ────────────────────────────────────────
 log_step "Collecting commit metadata"
-git -C "$LOCAL_REPO" log --all --grep="$GREP_PATTERN" --reverse \
+git -C "$LOCAL_REPO" log --all --extended-regexp --grep="$GREP_PATTERN" --reverse \
   --pretty=format:'{"hash":"%H","short":"%h","author":"%an","date":"%ad","subject":"%s"}' \
   --date=short 2>/dev/null > "$COMMITS_TMP" || true
 

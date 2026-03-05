@@ -1,100 +1,105 @@
-/* ── PR Risk Analyser — Jenkins Pipeline ───────────────────────────────────
- * Project-agnostic pipeline.  Override defaults via Jenkins parameters or
- * environment variables to reuse across teams.
- *
- * SETUP FOR YOUR PROJECT:
- *   1. Copy this file into your Jenkins job config
- *   2. Edit the @Library line below to match YOUR Jenkins shared libraries
- *      (or remove it entirely if your Jenkins doesn't use shared libs)
- *   3. Edit AGENT_LABEL default to match your available agents
- *   4. Ensure config.env exists in the repo (run: bash scripts/init.sh)
- *
- * Required:  JIRA_IDS parameter (comma-separated, e.g. PROJ-111,PROJ-222)
- * Optional:  AGENT_LABEL, TIMEOUT_MINUTES — configurable per instance.
- * ──────────────────────────────────────────────────────────────────────── */
-
-// ── Shared Libraries ─────────────────────────────────────────────────────────
-// Replace with your project's Jenkins shared libraries, or remove if unused.
-// Examples:
-//   @Library(['MyOrgLibrary@main']) _
-//   @Library(['GlobalJenkinsLibrary@2', 'TeamLibrary']) _
-@Library(['GlobalJenkinsLibrary@2']) _
+@Library(['GlobalJenkinsLibrary@2', 'ContentJenkinsLibrary']) _
 
 pipeline {
   parameters {
     string(
       name: 'JIRA_IDS',
-      description: 'Comma-separated JIRA ticket IDs (e.g., PROJ-111,PROJ-222)',
+      description: 'Comma-separated JIRA ticket IDs (e.g., DBCCPMCMS-40662,DBCCPMCMS-40663)',
       defaultValue: '',
-      trim: true
-    )
-    string(
-      name: 'AGENT_LABEL',
-      description: 'Jenkins agent label to run on (edit default for your infra)',
-      defaultValue: 'ubuntu',
-      trim: true
-    )
-    string(
-      name: 'TIMEOUT_MINUTES',
-      description: 'Pipeline timeout in minutes',
-      defaultValue: '15',
       trim: true
     )
   }
 
   agent {
-    label params.AGENT_LABEL ?: 'ubuntu'
+    label 'ubuntu_java-21_pea-testing'
   }
 
   options {
     timestamps()
-    timeout(time: (params.TIMEOUT_MINUTES ?: '15') as int, unit: 'MINUTES')
+    timeout(time: 15, unit: 'MINUTES')
     buildDiscarder(logRotator(numToKeepStr: '30'))
   }
 
   stages {
+
     stage('Validate Input') {
       steps {
         script {
-          if (!params.JIRA_IDS?.trim()) {
-            error('JIRA_IDS parameter is empty. Provide comma-separated IDs (e.g., PROJ-111,PROJ-222)')
+          if (!params.JIRA_IDS || params.JIRA_IDS.isEmpty()) {
+            error("❌ JIRA_IDS parameter is empty")
           }
-          def ids = params.JIRA_IDS.split(',').collect { it.trim() }.findAll { it }
+          def ids = params.JIRA_IDS.split(',').collect { it.trim() }
           ids.each { id ->
             if (!id.matches('[A-Z]+-[0-9]+')) {
-              error("Invalid JIRA ID format: ${id}. Expected LETTERS-NUMBERS (e.g., PROJ-123)")
+              error("❌ Invalid JIRA ID format: ${id}. Expected: ABC-123")
             }
           }
-          echo "Validated ${ids.size()} JIRA ID(s): ${ids.join(', ')}"
+          echo "✅ Validated ${ids.size()} JIRA ID(s): ${ids.join(', ')}"
+        }
+      }
+    }
+
+    stage('Clone Repository') {
+      steps {
+        echo "📦 Cloning qa-workspace repository using SSH..."
+
+        sshagent(credentials: ['bitbucket-ssh']) {
+          sh '''
+            set -e
+
+            # Ensure .ssh exists with correct perms
+            mkdir -p /home/jenkins/.ssh
+            chmod 700 /home/jenkins/.ssh
+
+            echo "🔑 Adding Bitbucket host key..."
+            ssh-keyscan -p 7999 bitbucket.tools.3stripes.net >> /home/jenkins/.ssh/known_hosts 2>/dev/null || true
+            chmod 600 /home/jenkins/.ssh/known_hosts
+
+            echo "🧹 Cleaning old workspace..."
+            rm -rf qa-workspace || true
+
+            echo "📥 Running git clone with verbose SSH..."
+            export GIT_SSH_COMMAND="ssh -vvv"
+
+            git clone -b master ssh://git@bitbucket.tools.3stripes.net:7999/~anjali3_adidas.com/qa-workspace.git
+          '''
         }
       }
     }
 
     stage('Detect Services') {
       steps {
-        sh 'bash scripts/detect_services.sh "${JIRA_IDS}"'
+        echo "🔍 Detecting services with changes for: ${params.JIRA_IDS}"
+        sshagent(credentials: ['bitbucket-ssh']) {
+          sh '''
+            cd qa-workspace
+            bash scripts/detect_services.sh "${JIRA_IDS}"
+            echo ""
+            echo "=== Services with changes ==="
+            cat pr-analysis/detected_services.txt 2>/dev/null || echo "No services matched"
+          '''
+        }
       }
     }
 
     stage('Run Analysis') {
       steps {
-        sh 'bash scripts/run_all_analyses.sh "${JIRA_IDS}"'
+        echo "📊 Running PR analysis for all detected services..."
+        sshagent(credentials: ['bitbucket-ssh']) {
+          sh '''
+            cd qa-workspace
+            bash scripts/run_all_analyses.sh "${JIRA_IDS}"
+          '''
+        }
       }
     }
 
     stage('Verify Results') {
       steps {
         sh '''
-          echo "=== Generated Artifacts ==="
-          echo ""
-          echo "summary.json files:"
+          cd qa-workspace
+          echo "📁 Summary.json files generated:"
           find pr-analysis -name "summary.json" -type f -exec ls -lh {} \\;
-          echo ""
-          echo "changes.diff files:"
-          find pr-analysis -name "changes.diff" -type f -exec ls -lh {} \\;
-          echo ""
-          echo "Detected services:"
-          cat pr-analysis/detected_services.txt 2>/dev/null || echo "(none)"
         '''
       }
     }
@@ -102,39 +107,23 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts(
-        artifacts: 'pr-analysis/*/summary.json,pr-analysis/*/changes.diff,pr-analysis/detected_services.txt,pr-analysis/*/run.log',
-        allowEmptyArchive: true,
-        fingerprint: true
-      )
       sh '''
         echo ""
         echo "================================================"
-        echo " ARTIFACTS READY FOR DOWNLOAD"
-        echo "================================================"
-        echo "Build URL : ${BUILD_URL}"
-        echo "Artifacts : ${BUILD_URL}artifact/pr-analysis/"
-        echo ""
-        echo "Next steps:"
-        echo "  1. Open VS Code Copilot Chat"
-        echo "  2. Say: 'Act as PR analyser'"
-        echo "  3. Provide source JIRA and destination JIRA"
+        echo "📦 ARTIFACTS READY FOR DOWNLOAD"
         echo "================================================"
       '''
+      archiveArtifacts(
+        artifacts: 'qa-workspace/pr-analysis/*/summary.json',
+        allowEmptyArchive: true,
+        fingerprint: true
+      )
     }
 
     failure {
       sh '''
-        echo "ANALYSIS FAILED"
-        echo ""
-        echo "Error logs:"
-        find pr-analysis -name "run.log" -type f -exec echo "--- {} ---" \\; -exec tail -20 {} \\;
-        echo ""
-        echo "Troubleshooting:"
-        echo "  1. Verify JIRA ID format (LETTERS-NUMBERS)"
-        echo "  2. Verify commits exist for those IDs"
-        echo "  3. Check SSH/network access to repositories"
-        echo "  4. Verify config.env is correct"
+        echo "❌ ANALYSIS FAILED"
+        cd qa-workspace 2>/dev/null && find pr-analysis -name "run.log" -type f -exec tail -20 {} \\; || true
       '''
     }
   }
