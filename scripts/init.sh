@@ -53,33 +53,23 @@ if [[ -z "$REPO_BASE_URL" ]]; then
   log_error "Base URL is required."; exit 1
 fi
 
-# ── Step 2: Service Discovery ─────────────────────────────────────────────────
-log_step "Step 2/4 — Service Discovery"
-echo "  1) Auto-detect — scans workspace for .git repos on each run"
-echo "  2) Manual — enter service/repo names now"
-read -rp "Select [1-2] [1]: " SVC_CHOICE
+# ── Step 2: Services ─────────────────────────────────────────────────────────
+log_step "Step 2/4 — Services"
+echo "Enter service names one per line (these must match repo names)."
+echo "Press Enter on empty line to finish."
+SVC_NAMES=()
+while true; do
+  read -rp "  Service: " SVC_NAME
+  [[ -z "$SVC_NAME" ]] && break
+  SVC_NAMES+=("$SVC_NAME")
+done
 
-SVC_MODE="auto"
-SERVICES_LIST=""
-
-if [[ "${SVC_CHOICE:-1}" == "2" ]]; then
-  SVC_MODE="manual"
-  echo ""
-  echo "Enter service names one per line (these must match repo names)."
-  echo "Press Enter on empty line to finish."
-  SVC_NAMES=()
-  while true; do
-    read -rp "  Service: " SVC_NAME
-    [[ -z "$SVC_NAME" ]] && break
-    SVC_NAMES+=("$SVC_NAME")
-  done
-
-  if [[ ${#SVC_NAMES[@]} -eq 0 ]]; then
-    log_error "At least one service is required in manual mode."; exit 1
-  fi
-
-  SERVICES_LIST=$(IFS=','; echo "${SVC_NAMES[*]}")
+if [[ ${#SVC_NAMES[@]} -eq 0 ]]; then
+  log_error "At least one service is required."; exit 1
 fi
+
+SVC_MODE="manual"
+SERVICES_LIST=$(IFS=','; echo "${SVC_NAMES[*]}")
 
 # ── Step 3: JIRA ──────────────────────────────────────────────────────────────
 log_step "Step 3/4 — JIRA Configuration"

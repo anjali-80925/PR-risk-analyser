@@ -1,130 +1,37 @@
-@Library(['GlobalJenkinsLibrary@2', 'ContentJenkinsLibrary']) _
-
 pipeline {
   parameters {
-    string(
-      name: 'JIRA_IDS',
-      description: 'Comma-separated JIRA ticket IDs (e.g., DBCCPMCMS-40662,DBCCPMCMS-40663)',
-      defaultValue: '',
-      trim: true
-    )
+    string(name: 'JIRA_IDS', description: 'JIRA ticket IDs, comma-separated (e.g. DTB-123,DTB-456)', trim: true)
   }
 
-  agent {
-    label 'ubuntu_java-21_pea-testing'
-  }
+  agent any
 
   options {
     timestamps()
     timeout(time: 15, unit: 'MINUTES')
-    buildDiscarder(logRotator(numToKeepStr: '30'))
   }
 
   stages {
-
-    stage('Validate Input') {
+    stage('Analyze') {
       steps {
         script {
-          if (!params.JIRA_IDS || params.JIRA_IDS.isEmpty()) {
-            error("❌ JIRA_IDS parameter is empty")
-          }
-          def ids = params.JIRA_IDS.split(',').collect { it.trim() }
-          ids.each { id ->
-            if (!id.matches('[A-Z]+-[0-9]+')) {
-              error("❌ Invalid JIRA ID format: ${id}. Expected: ABC-123")
-            }
-          }
-          echo "✅ Validated ${ids.size()} JIRA ID(s): ${ids.join(', ')}"
+          if (!params.JIRA_IDS?.trim()) error('Provide JIRA_IDS parameter')
         }
-      }
-    }
-
-    stage('Clone Repository') {
-      steps {
-        echo "📦 Cloning qa-workspace repository using SSH..."
-
-        sshagent(credentials: ['bitbucket-ssh']) {
-          sh '''
-            set -e
-
-            # Ensure .ssh exists with correct perms
-            mkdir -p /home/jenkins/.ssh
-            chmod 700 /home/jenkins/.ssh
-
-            echo "🔑 Adding Bitbucket host key..."
-            ssh-keyscan -p 7999 bitbucket.tools.3stripes.net >> /home/jenkins/.ssh/known_hosts 2>/dev/null || true
-            chmod 600 /home/jenkins/.ssh/known_hosts
-
-            echo "🧹 Cleaning old workspace..."
-            rm -rf qa-workspace || true
-
-            echo "📥 Running git clone with verbose SSH..."
-            export GIT_SSH_COMMAND="ssh -vvv"
-
-            git clone -b master ssh://git@bitbucket.tools.3stripes.net:7999/~anjali3_adidas.com/qa-workspace.git
-          '''
-        }
-      }
-    }
-
-    stage('Detect Services') {
-      steps {
-        echo "🔍 Detecting services with changes for: ${params.JIRA_IDS}"
-        sshagent(credentials: ['bitbucket-ssh']) {
-          sh '''
-            cd qa-workspace
-            bash scripts/detect_services.sh "${JIRA_IDS}"
-            echo ""
-            echo "=== Services with changes ==="
-            cat pr-analysis/detected_services.txt 2>/dev/null || echo "No services matched"
-          '''
-        }
-      }
-    }
-
-    stage('Run Analysis') {
-      steps {
-        echo "📊 Running PR analysis for all detected services..."
-        sshagent(credentials: ['bitbucket-ssh']) {
-          sh '''
-            cd qa-workspace
-            bash scripts/run_all_analyses.sh "${JIRA_IDS}"
-          '''
-        }
-      }
-    }
-
-    stage('Verify Results') {
-      steps {
         sh '''
-          cd qa-workspace
-          echo "📁 Summary.json files generated:"
-          find pr-analysis -name "summary.json" -type f -exec ls -lh {} \\;
+          source config.env
+          bash scripts/detect_services.sh "${JIRA_IDS}"
+          bash scripts/run_all_analyses.sh "${JIRA_IDS}"
         '''
       }
     }
   }
 
   post {
-    always {
-      sh '''
-        echo ""
-        echo "================================================"
-        echo "📦 ARTIFACTS READY FOR DOWNLOAD"
-        echo "================================================"
-      '''
-      archiveArtifacts(
-        artifacts: 'qa-workspace/pr-analysis/*/summary.json',
-        allowEmptyArchive: true,
-        fingerprint: true
-      )
+    success {
+      archiveArtifacts artifacts: 'pr-analysis/**/*.json', allowEmptyArchive: true
+      sh 'echo "✅ Done — download summary.json from Build Artifacts"'
     }
-
     failure {
-      sh '''
-        echo "❌ ANALYSIS FAILED"
-        cd qa-workspace 2>/dev/null && find pr-analysis -name "run.log" -type f -exec tail -20 {} \\; || true
-      '''
+      sh 'echo "❌ Failed — check Console Output above"'
     }
   }
 }
