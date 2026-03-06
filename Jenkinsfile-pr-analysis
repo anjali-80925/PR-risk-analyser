@@ -20,7 +20,7 @@ pipeline {
           echo "Current directory: $(pwd)"
           echo "Files in workspace:"
           ls -la
-          . config.env
+          . ./config.env
           bash scripts/detect_services.sh "${JIRA_IDS}"
           bash scripts/run_all_analyses.sh "${JIRA_IDS}"
         '''
