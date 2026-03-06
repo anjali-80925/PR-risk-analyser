@@ -17,7 +17,7 @@ pipeline {
           if (!params.JIRA_IDS?.trim()) error('Provide JIRA_IDS parameter')
         }
         sh '''
-          source config.env
+          . config.env
           bash scripts/detect_services.sh "${JIRA_IDS}"
           bash scripts/run_all_analyses.sh "${JIRA_IDS}"
         '''
