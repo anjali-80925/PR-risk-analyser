@@ -1,7 +1,7 @@
 pipeline {
   parameters {
     string(name: 'JIRA_IDS', description: 'JIRA ticket IDs, comma-separated (e.g. DTB-123,DTB-456)', trim: true)
-    choice(name: 'COMMIT_FILTER_MODE', defaultValue: 'only', choices: ['any','only'], description: 'Commit filter mode: any (for regression analysis), only (for ticket specific analysis)')
+    choice(name: 'COMMIT_FILTER_MODE', choices: ['only','any'], description: 'Commit filter mode: only (for ticket specific analysis), any (for regression analysis)')
     string(name: 'SSH_CREDENTIAL_ID', defaultValue: 'bitbucket-ssh', description: 'Jenkins SSH credential ID for Git access', trim: true)
   }
 
