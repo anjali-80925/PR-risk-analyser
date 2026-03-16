@@ -63,6 +63,121 @@ jira_grep_pattern() {
   echo "${JIRA_ARRAY[*]}"
 }
 
+# Validate commit filter mode.  Returns 0 on valid, 1 on invalid.
+validate_filter_mode() {
+  [[ "$1" =~ ^(any|all|only)$ ]]
+}
+
+# Get commits based on filter mode.
+# Modes:
+#   any  — Commits mentioning AT LEAST ONE of the provided IDs (default, current behavior)
+#   all  — Commits mentioning ALL of the provided IDs
+#   only — Commits mentioning ONLY the provided IDs (no other JIRA IDs)
+#
+# Usage:
+#   get_matching_commits <repo_path> <filter_mode>
+#   Prints commit hashes, one per line, deduplicated
+get_matching_commits() {
+  local repo_path="$1"
+  local filter_mode="${2:-any}"
+  local temp_file
+  temp_file=$(mktemp)
+  trap "rm -f $temp_file" RETURN
+
+  if ! validate_filter_mode "$filter_mode"; then
+    log_error "Invalid filter mode: $filter_mode (expected: any|all|only)"
+    return 1
+  fi
+
+  case "$filter_mode" in
+    any)
+      # Search FULL COMMIT MESSAGE (subject + body) for at least one ID
+      # This is the original behavior - gets broader results
+      local pattern
+      pattern=$(jira_grep_pattern)
+      git -C "$repo_path" log --all --extended-regexp --grep="$pattern" --pretty=%H --reverse 2>/dev/null
+      ;;
+    all)
+      # Commits mentioning ALL provided IDs in FULL COMMIT MESSAGE
+      if [[ ${#JIRA_ARRAY[@]} -eq 0 ]]; then
+        log_error "No JIRA IDs provided for 'all' filter mode"
+        return 1
+      fi
+
+      local temp_commits
+      temp_commits=$(mktemp)
+      git -C "$repo_path" log --all --extended-regexp --grep="${JIRA_ARRAY[0]}" --pretty=%H --reverse 2>/dev/null > "$temp_commits"
+
+      local commit
+      while IFS= read -r commit; do
+        [[ -z "$commit" ]] && continue
+        local found_all=true
+        for jid in "${JIRA_ARRAY[@]:1}"; do
+          if ! git -C "$repo_path" log -1 "$commit" --pretty=%B 2>/dev/null | grep -q "$jid"; then
+            found_all=false
+            break
+          fi
+        done
+        [[ "$found_all" == "true" ]] && echo "$commit"
+      done < "$temp_commits"
+      rm -f "$temp_commits"
+      ;;
+    only)
+      # Commits mentioning ONLY the provided IDs in the SUBJECT/TITLE (not body)
+      # OPTIMIZED: Search by pattern first (faster), then filter for no-other-IDs
+      local pattern
+      pattern=$(jira_grep_pattern)
+
+      # START with commits matching our pattern (much faster than scanning all)
+      git -C "$repo_path" log --all --extended-regexp --grep="$pattern" --pretty="%H_%s" --reverse 2>/dev/null | while IFS='_' read -r commit_hash subject; do
+        [[ -z "$commit_hash" ]] && continue
+
+        # Extract all JIRA-like IDs from SUBJECT ONLY: PROJ-123
+        local all_found_ids
+        all_found_ids=$(echo "$subject" | grep -oE '[A-Z][A-Z0-9]*-[0-9]+' | sort -u)
+
+        # REQUIREMENT 1: Subject MUST contain at least ONE of our target IDs
+        local has_target_id=false
+        while IFS= read -r found_id; do
+          [[ -z "$found_id" ]] && continue
+          for our_id in "${JIRA_ARRAY[@]}"; do
+            if [[ "$found_id" == "$our_id" ]]; then
+              has_target_id=true
+              break
+            fi
+          done
+          [[ "$has_target_id" == "true" ]] && break
+        done <<< "$all_found_ids"
+
+        # Skip if subject doesn't contain any of our target IDs
+        if [[ "$has_target_id" != "true" ]]; then
+          continue
+        fi
+
+        # REQUIREMENT 2: Subject must contain NO other JIRA IDs (only our allowed ones)
+        local has_other=false
+        while IFS= read -r found_id; do
+          [[ -z "$found_id" ]] && continue
+          local is_allowed=false
+          for our_id in "${JIRA_ARRAY[@]}"; do
+            if [[ "$found_id" == "$our_id" ]]; then
+              is_allowed=true
+              break
+            fi
+          done
+          if [[ "$is_allowed" != "true" ]]; then
+            has_other=true
+            break
+          fi
+        done <<< "$all_found_ids"
+
+        # Output commit only if subject has target ID + no other IDs
+        [[ "$has_other" != "true" ]] && echo "$commit_hash"
+      done
+      ;;
+  esac
+}
+
 # ── Service resolution ────────────────────────────────────────────────────────
 
 # Populate SERVICE_LIST array from config.  Requires load_config.sh sourced first.

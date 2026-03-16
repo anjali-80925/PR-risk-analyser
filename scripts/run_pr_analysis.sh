@@ -10,28 +10,40 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/load_config.sh"   # also pulls in common.sh
 
 parse_jira_ids "$JIRA_IDS"
-GREP_PATTERN=$(jira_grep_pattern)
 
 OUT_DIR="$ANALYSIS_DIR/$SERVICE"
 mkdir -p "$OUT_DIR"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo " PR Analysis: $SERVICE / ${JIRA_ARRAY[*]}"
+echo " Filter Mode: ${CFG_COMMIT_FILTER_MODE}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ── Ensure local repo is cloned & up-to-date ──────────────────────────────────
 ensure_repo "$SERVICE" || exit 1
 
-# ── Find matching commits (single git log) ────────────────────────────────────
-log_step "Searching commits"
+# ── Find matching commits using configured filter mode ────────────────────────
+log_step "Searching commits (filter mode: ${CFG_COMMIT_FILTER_MODE})"
 
+# DEBUG: Show what we're searching for
+log_info "Looking for JIRA IDs: ${JIRA_ARRAY[*]}"
+log_info "Search pattern: $(jira_grep_pattern)"
+
+# Get matching commits
 mapfile -t COMMITS < <(
-  git -C "$LOCAL_REPO" log --all --extended-regexp --grep="$GREP_PATTERN" --pretty=%H --reverse 2>/dev/null \
+  get_matching_commits "$LOCAL_REPO" "${CFG_COMMIT_FILTER_MODE}" \
     | awk '!seen[$0]++'
 )
 
+# DEBUG: Show raw results before deduplication
 if [[ ${#COMMITS[@]} -eq 0 ]]; then
-  log_error "No commits found mentioning any JIRA ID: ${JIRA_ARRAY[*]}"
+  log_info "DEBUG: Running raw git log to see what commits exist..."
+  pattern=$(jira_grep_pattern)
+  git -C "$LOCAL_REPO" log --all --extended-regexp --grep="$pattern" --pretty="%H %s" --reverse 2>/dev/null | head -10
+fi
+
+if [[ ${#COMMITS[@]} -eq 0 ]]; then
+  log_error "No commits found with filter mode '${CFG_COMMIT_FILTER_MODE}' for: ${JIRA_ARRAY[*]}"
   exit 1
 fi
 
@@ -67,9 +79,12 @@ fi
 
 # ── Commit metadata (single log call) ────────────────────────────────────────
 log_step "Collecting commit metadata"
-git -C "$LOCAL_REPO" log --all --extended-regexp --grep="$GREP_PATTERN" --reverse \
-  --pretty=format:'{"hash":"%H","short":"%h","author":"%an","date":"%ad","subject":"%s"}' \
-  --date=short 2>/dev/null > "$COMMITS_TMP" || true
+for COMMIT in "${COMMITS[@]}"; do
+  git -C "$LOCAL_REPO" log -1 "$COMMIT" --reverse \
+    --pretty=format:'{"hash":"%H","short":"%h","author":"%an","date":"%ad","subject":"%s"}' \
+    --date=short 2>/dev/null >> "$COMMITS_TMP" || true
+  echo "" >> "$COMMITS_TMP"
+done
 
 # ── Enhanced extraction ───────────────────────────────────────────────────────
 log_step "Running enhanced extraction"

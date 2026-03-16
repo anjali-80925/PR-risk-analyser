@@ -1,6 +1,7 @@
 pipeline {
   parameters {
     string(name: 'JIRA_IDS', description: 'JIRA ticket IDs, comma-separated (e.g. DTB-123,DTB-456)', trim: true)
+    choice(name: 'COMMIT_FILTER_MODE', defaultValue: 'only', choices: ['any','only'], description: 'Commit filter mode: any (for regression analysis), only (for ticket specific analysis)')
     string(name: 'SSH_CREDENTIAL_ID', defaultValue: 'bitbucket-ssh', description: 'Jenkins SSH credential ID for Git access', trim: true)
   }
 
@@ -21,6 +22,7 @@ pipeline {
           sh '''
             export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no"
             . ./config.env
+            export COMMIT_FILTER_MODE="${COMMIT_FILTER_MODE}"
             bash scripts/detect_services.sh "${JIRA_IDS}"
             bash scripts/run_all_analyses.sh "${JIRA_IDS}"
           '''
