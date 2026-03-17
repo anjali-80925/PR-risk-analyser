@@ -24,11 +24,14 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 # Source the .env file (skip comments and blank lines)
+# BUT: preserve any env vars already set (e.g., from Jenkins)
 set -a
 while IFS='=' read -r key value; do
   [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
   key=$(echo "$key" | xargs)
   value=$(echo "$value" | xargs)
+  # Only set if not already in environment (allows Jenkins overrides)
+  [[ -n "${!key:-}" ]] && continue
   export "$key=$value"
 done < "$CONFIG_FILE"
 set +a
