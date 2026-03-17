@@ -21,8 +21,11 @@ pipeline {
         withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIAL_ID, keyFileVariable: 'SSH_KEY')]) {
           sh '''
             export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no"
-            export COMMIT_FILTER_MODE="${COMMIT_FILTER_MODE}"
+            export COMMIT_FILTER_MODE='${params.COMMIT_FILTER_MODE}'
             . ./config.env
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo " Filter Mode: $COMMIT_FILTER_MODE"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             bash scripts/detect_services.sh "${JIRA_IDS}"
             bash scripts/run_all_analyses.sh "${JIRA_IDS}"
           '''
