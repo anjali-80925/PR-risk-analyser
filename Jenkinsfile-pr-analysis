@@ -22,6 +22,10 @@ pipeline {
           withEnv(["COMMIT_FILTER_MODE=${params.COMMIT_FILTER_MODE}", "JIRA_IDS=${params.JIRA_IDS}"]) {
             sh '''
               export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no"
+              
+              # Update config.env with Jenkins parameter value
+              sed -i "s/^COMMIT_FILTER_MODE=.*/COMMIT_FILTER_MODE=$COMMIT_FILTER_MODE/" ./config.env
+              
               . ./config.env
               echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
               echo " Filter Mode: $COMMIT_FILTER_MODE"
