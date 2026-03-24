@@ -1,8 +1,6 @@
 pipeline {
   parameters {
     string(name: 'JIRA_IDS', description: 'JIRA ticket IDs, comma-separated (e.g. DTB-123,DTB-456)', trim: true)
-    choice(name: 'COMMIT_FILTER_MODE', choices: ['only','any'], description: 'Commit filter mode: only (for ticket specific analysis), any (for regression analysis)')
-    string(name: 'SSH_CREDENTIAL_ID', defaultValue: 'bitbucket-ssh', description: 'Jenkins SSH credential ID for Git access', trim: true)
   }
 
   agent any
@@ -17,8 +15,12 @@ pipeline {
       steps {
         script {
           if (!params.JIRA_IDS?.trim()) error('Provide JIRA_IDS parameter')
-        }
-        withCredentials([sshUserPrivateKey(credentialsId: params.SSH_CREDENTIAL_ID, keyFileVariable: 'SSH_KEY')]) {
+          
+          // Auto-detect credential from SCM configuration
+          def credentialId = scm.userRemoteConfigs[0].credentialsId
+          echo "Using Git credential ID: ${credentialId}"
+          
+          withCredentials([sshUserPrivateKey(credentialsId: credentialId, keyFileVariable: 'SSH_KEY')]) {
           withEnv(["COMMIT_FILTER_MODE=${params.COMMIT_FILTER_MODE}", "JIRA_IDS=${params.JIRA_IDS}"]) {
             sh '''
               export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no"

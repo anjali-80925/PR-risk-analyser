@@ -10,12 +10,6 @@ Cross-service, risk-based PR analysis tool for QA teams. Automatically detects t
 - **Plain English** — outputs risk blocks readable by testers, PMs, and business stakeholders
 - **Two commands** — the entire pipeline runs exactly 2 shell commands; everything else is handled by Copilot
 
-## Prerequisites
-
-- **Git** (with SSH or HTTPS access to your repos)
-- **Python 3.x** (stdlib only — no `pip install` needed)
-- **VS Code** with **GitHub Copilot** (Chat + JIRA MCP server for posting)
-
 ## Quick Start
 
 ### 1. Clone and configure
@@ -68,24 +62,6 @@ Step 4:  Generates 3–6 risk blocks in plain English (High / Medium only)
 Step 5:  Preview → Confirm → Posts to JIRA verbatim
 ```
 
-Only **two shell commands** are executed. Risk analysis, merging, preview, and JIRA posting all happen inside the Copilot agent.
-
-## Configuration
-
-All settings live in `config.env` (created by the setup wizard or copied from `config.env.example`):
-
-| Setting | Purpose | Default |
-|---------|---------|---------|
-| `GIT_PROVIDER` | `bitbucket-server`, `bitbucket-cloud`, `github`, `gitlab` | — |
-| `REPO_BASE_URL` | SSH/HTTPS base URL for all repos | — |
-| `SERVICE_DISCOVERY_MODE` | `auto` (scan workspace) or `manual` (explicit list) | `manual` |
-| `SERVICES` | Comma-separated repo names (manual mode) | — |
-| `JIRA_PROJECT_KEYS` | JIRA project prefix(es) for validation | — |
-| `MAX_PARALLEL` | Concurrent service scans | `4` |
-| `REF_CACHE_TTL` | Remote ref cache lifetime (seconds) | `600` |
-
-> `config.env` is gitignored — each team member / project gets their own.
-
 ## Language Support
 
 The extraction engine (`extract_enhanced.py`) auto-detects languages from file extensions in the diff and applies the correct patterns for each:
@@ -105,8 +81,6 @@ Multi-language PRs are supported — if a diff touches `.java` and `.ts` files, 
 
 Add a `LANG_*` dictionary in `scripts/lib/extract_enhanced.py` and register it in the `LANGUAGE_PROFILES` list. Each profile defines: `extensions`, `sig_pattern`, `import_pattern`, `export_patterns`, `test_file_pattern`, `test_block_pattern`, `assertion_pattern`, and file exclusion rules.
 
-## Enhanced Extraction (summary.json)
-
 Each service analysis produces a rich `summary.json`:
 
 | Field | Description |
@@ -121,111 +95,53 @@ Each service analysis produces a rich `summary.json`:
 | `diff_stats` | `files_changed`, `lines_added`, `lines_removed`, `new_files`, `deleted_files` |
 | `commits` | Commit metadata (hash, author, date, subject) |
 
-## Adding a New Service
+## Jenkins CI
 
-**Auto-detect mode:** Ensure the repo is accessible at `REPO_BASE_URL/<name>.git`. It will be cloned automatically when a matching JIRA ID is found.
+`Jenkinsfile-pr-analysis` provides a ready-to-use declarative pipeline with automatic credential detection:
 
-**Manual mode:** Edit `config.env`:
+**Features:**
+- **Auto-detects Git credentials** from your Pipeline SCM configuration — no hardcoding needed
+- **Parameters:** `JIRA_IDS` (required), `COMMIT_FILTER_MODE` (only/any), `GIT_CREDENTIAL_ID` (optional override)
+- **Stages:** Validate Input → Detect Services → Run Analysis → Archive Artifacts
+- **Artifacts:** `summary.json` files are archived automatically per service
 
-```bash
-SERVICES=existing-service,new-service
-```
+**Setup for Your Team (5 minutes):**
 
-## Workspace Structure
+1. **Create Pipeline Job** in Jenkins
+   - Select "Pipeline script from SCM"
+   - Configure your Git SCM URL and select your team's credential
+   - Set script path: `Jenkinsfile-pr-analysis`
+   - Jenkins will automatically use the same credential for service repo cloning
 
-```
-qa-workspace/
-├── .github/
-│   └── copilot-instructions.md    # Copilot agent prompt (risk analysis logic)
-├── .vscode/
-│   └── mcp.json                   # JIRA MCP server configuration
-├── scripts/
-│   ├── init.sh                    # Interactive setup wizard
-│   ├── detect_services.sh         # Service detection (COMMAND 1 of 2)
-│   ├── run_pr_analysis.sh         # Single-service analysis
-│   ├── run_all_analyses.sh        # Parallel orchestrator (COMMAND 2 of 2)
-│   └── lib/
-│       ├── common.sh              # Shared utilities (logging, git helpers, JIRA parsing)
-│       ├── load_config.sh         # config.env parser
-│       └── extract_enhanced.py    # Language-aware extraction engine
-├── pr-analysis/                   # Output directory (gitignored)
-├── .service-repos/                # Cached repo clones (gitignored)
-├── config.env                     # Team config (gitignored — created by init.sh)
-├── config.env.example             # Template for new projects
-├── Jenkinsfile-pr-analysis        # CI pipeline (optional)
-└── package.json                   # NPM convenience scripts
-```
+2. **Configure `config.env`** on Jenkins workspace (or commit it to a team branch):
+   ```bash
+   cp config.env.example config.env
+   # Edit with your Git provider, service repos, and JIRA keys
+   ```
 
-## NPM Scripts
+3. **Run builds:**
+   - Click "Build with Parameters"
+   - Enter JIRA IDs (e.g., `PROJ-123,PROJ-456`)
+   - Select filter mode
+   - Done!
 
-```bash
-npm run setup               # Interactive config wizard
-npm run detect -- JIRA-123  # Find which services have changes
-npm run analyze -- JIRA-123 # Run full analysis for all detected services
-npm run clean               # Remove analysis output (keep repo clones)
-npm run clean:all           # Remove everything (output + repo clones)
-```
-
-## Jenkins CI (Optional)
-
-`Jenkinsfile-pr-analysis` provides a ready-to-use declarative pipeline:
-
-- **Parameters:** `JIRA_IDS` (required), `AGENT_LABEL` (default: `ubuntu`), `TIMEOUT_MINUTES` (default: `15`)
-- **Stages:** Validate Input → Detect Services → Run Analysis → Verify Results
-- **Artifacts:** `summary.json`, `changes.diff`, and `run.log` per service are archived automatically
-
-To use in your project:
-
-1. Copy `Jenkinsfile-pr-analysis` into your Jenkins job config
-2. Edit the `@Library` line to match your Jenkins shared libraries (or remove it)
-3. Edit `AGENT_LABEL` default to match your available agents
-4. Ensure `config.env` exists in the repo
+**Multi-Team Support:**
+Different teams can use the same Jenkinsfile with different credentials:
+- Team A: Uses credential `team-a-github` (auto-detected from their SCM config)
+- Team B: Uses credential `team-b-bitbucket` (auto-detected from their SCM config)
+- No Jenkinsfile modifications required ✅
 
 ## Porting to Another Project
 
 This tool is designed to be reused across teams with zero code changes:
 
-1. **Clone the repo** into a new workspace
+1. **Fork/clone the repo** into your team's namespace
 2. **Create config:**
    ```bash
    cp config.env.example config.env
    # Edit with your project's repos, git provider, and JIRA key
    ```
    Or run `bash scripts/init.sh` for the interactive wizard.
-3. **Open VS Code** and start analysing — `"Analyze PROJ-123 and post to PROJ-456"`
+3. **Set up Jenkins** (see above) or **use locally** via VS Code Copilot
 
 The only project-specific file is `config.env` (gitignored). Everything else — scripts, Copilot prompt, extraction engine — works across any project, language, or git provider.
-
-## Shared Library (scripts/lib/)
-
-All scripts share common utilities via `common.sh` to eliminate duplicated code:
-
-| Function | Purpose |
-|----------|---------|
-| `parse_jira_ids()` | Validate and split comma-separated JIRA IDs |
-| `jira_grep_pattern()` | Build `ID1\|ID2` pattern for git log grep |
-| `ensure_repo()` | Clone or fetch a service repo (one network round-trip) |
-| `resolve_services()` | Populate service list from config (auto or manual mode) |
-| `cleanup_analysis()` | Remove old results while preserving cache |
-| `log_info/ok/warn/error/step()` | Consistent logging across all scripts |
-
-Path constants (`WORKSPACE_ROOT`, `SERVICE_REPOS_DIR`, `ANALYSIS_DIR`, `CACHE_DIR`) are defined once and reused everywhere. Jenkins persistence is handled automatically — repos and cache survive workspace re-clones.
-
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| `config.env` not found | Run `bash scripts/init.sh` or `cp config.env.example config.env` |
-| No services detected | Verify JIRA ID has commits in at least one repo; check SSH access |
-| Clone/fetch failed | Verify `REPO_BASE_URL` in `config.env`; test `git ls-remote <url>` manually |
-| Empty `summary.json` | Check `pr-analysis/<service>/run.log` for errors |
-| Wrong language detected | Verify file extensions in the diff; add a language profile if needed |
-| Windows: scripts fail | Ensure Git Bash is installed; scripts run via `bash -c "..."` automatically |
-
-## Team Onboarding
-
-1. Clone this repo
-2. Run `bash scripts/init.sh`
-3. Open VS Code → Copilot Chat → `"Analyze JIRA-123 and post to JIRA-456"`
-
-No other configuration needed. No manual git clones. No maintenance.
