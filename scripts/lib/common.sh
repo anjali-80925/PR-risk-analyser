@@ -213,6 +213,19 @@ repo_url_for() {
   echo "${CFG_REPO_BASE_URL}/${1}.git"
 }
 
+# Resolve a WSL path to a Windows path for git.exe calls.
+# Converts /mnt/X/... → X:/... using bash-only string manipulation to avoid
+# wslpath quoting/CR issues when called from a PowerShell-spawned bash process.
+_to_win_path() {
+  local p="$1"
+  if [[ "$p" =~ ^/mnt/([a-zA-Z])(/.*)? ]]; then
+    echo "${BASH_REMATCH[1]^^}:${BASH_REMATCH[2]}"
+  else
+    # Not a /mnt/ path — try wslpath as fallback, strip any stray CR
+    wslpath -w "$p" 2>/dev/null | tr -d '\r' || echo "$p"
+  fi
+}
+
 # Ensure a local clone exists and is up-to-date.
 #   ensure_repo <service_name> [--quiet]
 #   Sets LOCAL_REPO to the checked-out path.
@@ -223,19 +236,85 @@ ensure_repo() {
   local url
   url=$(repo_url_for "$service")
 
+  # Use git.exe (Windows Git) so it can use the Windows SSH agent/keys.
+  local GIT_CMD="git.exe"
+  command -v git.exe &>/dev/null || GIT_CMD="git"
+
   if [[ ! -d "$LOCAL_REPO/.git" ]]; then
     [[ "$quiet" != "--quiet" ]] && log_info "$service — cloning (first run)..."
-    if ! git clone --quiet "$url" "$LOCAL_REPO" &>/dev/null; then
-      log_error "Clone failed for $service ($url)"
+    local win_dest
+    win_dest=$(_to_win_path "$LOCAL_REPO")
+    if ! $GIT_CMD clone --quiet "$url" "$win_dest" 2>/dev/null; then
+      # Non-fatal: warn and return 1 so caller can skip this service gracefully
+      log_warn "Clone failed for $service ($url) — no SSH access or repo not found; skipping"
       return 1
     fi
   fi
 
-  # Single fetch — one network round-trip
-  git -C "$LOCAL_REPO" fetch --all --prune --quiet &>/dev/null || {
-    [[ "$quiet" != "--quiet" ]] && log_warn "$service — fetch failed, using cached refs"
-  }
+  # Fetch and update working tree so filesystem scans (e.g. index_tests.py) see new files
+  # git.exe is a Windows binary — it cannot resolve WSL paths (/mnt/c/...).
+  # Convert LOCAL_REPO to a Windows path for all git.exe calls, just like clone does.
+  local repo_path_for_git="$LOCAL_REPO"
+  if [[ "$GIT_CMD" == "git.exe" ]]; then
+    repo_path_for_git=$(_to_win_path "$LOCAL_REPO")
+  fi
+  if $GIT_CMD -C "$repo_path_for_git" fetch --all --prune --quiet 2>/dev/null; then
+    $GIT_CMD -C "$repo_path_for_git" pull --ff-only --quiet 2>/dev/null || {
+      [[ "$quiet" != "--quiet" ]] && log_warn "$service — pull --ff-only failed (diverged branch?), working tree unchanged"
+    }
+  else
+    # Always warn on fetch failure — stale refs cause missed commits (e.g. ticket commits pushed
+    # after last clone won't be found). Never suppress this with --quiet.
+    log_warn "$service — fetch failed (SSH/network issue?), using cached refs — commits pushed recently may be missed"
+  fi
   return 0
+}
+
+# Clone all configured services in parallel (called once from init.sh).
+# Skips repos already cloned — safe to re-run.
+clone_all_services() {
+  ensure_dirs
+
+  local GIT_CMD="git.exe"
+  command -v git.exe &>/dev/null || GIT_CMD="git"
+
+  local pids=()
+  local names=()
+
+  for service in "${CFG_SERVICES[@]}"; do
+    local dest="$SERVICE_REPOS_DIR/$service"
+    if [[ -d "$dest/.git" ]]; then
+      log_ok "$service — already cloned, skipping"
+      continue
+    fi
+
+    local url
+    url=$(repo_url_for "$service")
+    local win_dest
+    win_dest=$(_to_win_path "$dest")
+
+    log_info "$service — cloning in background..."
+    $GIT_CMD clone --quiet "$url" "$win_dest" &>/dev/null &
+    pids+=($!)
+    names+=("$service")
+  done
+
+  # Wait for all parallel clones to finish
+  local failed=0
+  for i in "${!pids[@]}"; do
+    if wait "${pids[$i]}"; then
+      log_ok "${names[$i]} — cloned"
+    else
+      log_warn "${names[$i]} — clone failed (check SSH keys / network)"
+      (( failed++ )) || true
+    fi
+  done
+
+  if [[ $failed -gt 0 ]]; then
+    log_warn "$failed repo(s) failed to clone — analysis will use available repos"
+  else
+    log_ok "All service repos cloned to: $SERVICE_REPOS_DIR"
+  fi
 }
 
 # ── Analysis directory helpers ────────────────────────────────────────────────

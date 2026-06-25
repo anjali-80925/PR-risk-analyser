@@ -44,6 +44,7 @@ CFG_MAX_PARALLEL="${MAX_PARALLEL:-4}"
 CFG_CACHE_TTL="${REF_CACHE_TTL:-600}"
 CFG_JIRA_KEYS="${JIRA_PROJECT_KEYS:-}"
 CFG_COMMIT_FILTER_MODE="${COMMIT_FILTER_MODE:-any}"
+CFG_TEST_REPOS="${TEST_REPOS:-}"
 
 # Build services array from comma-separated list
 IFS=',' read -ra CFG_SERVICES <<< "${SERVICES:-}"

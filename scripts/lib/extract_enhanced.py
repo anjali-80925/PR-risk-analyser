@@ -267,19 +267,41 @@ def build_exclude_checker(profiles: list):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def parse_diff(diff_text: str) -> dict:
-    """Parse unified diff into per-file sections."""
+    """Parse unified diff into per-file sections.
+
+    Handles both standard git format (diff --git a/foo b/foo)
+    and Bitbucket Server format (diff --git src://foo dst://foo).
+    """
     files = {}
     current_file = None
     current_lines = []
+
+    def _extract_filename(git_line: str) -> str:
+        # Standard format: diff --git a/path b/path
+        m = re.search(r'\bb/(.+)$', git_line)
+        if m:
+            return m.group(1).strip()
+        # Bitbucket Server format: diff --git src://path dst://path
+        m = re.search(r'dst://(.+)$', git_line)
+        if m:
+            return m.group(1).strip()
+        # Fallback: last token after space
+        parts = git_line.split()
+        return parts[-1].lstrip('/') if parts else None
 
     for line in diff_text.splitlines():
         if line.startswith('diff --git'):
             if current_file:
                 files[current_file] = '\n'.join(current_lines)
-            match = re.search(r'b/(.+)$', line)
-            current_file = match.group(1) if match else None
+            current_file = _extract_filename(line)
             current_lines = [line]
         elif current_file:
+            # If we got a generic filename from _extract_filename and now
+            # see +++ src:// or +++ dst:// we can refine it
+            if line.startswith('+++ '):
+                refined = re.sub(r'^\+\+\+\s+(dst://|b/)', '', line).strip()
+                if refined and refined != '/dev/null':
+                    current_file = refined
             current_lines.append(line)
 
     if current_file:

@@ -8,7 +8,7 @@ Cross-service, risk-based PR analysis tool for QA teams. Automatically detects t
 - **Multi-language** — auto-detects and analyses JS/TS, Java, Python, Go, C# (with generic fallback)
 - **Cross-service** — scans multiple repos in parallel, merges overlapping risks
 - **Plain English** — outputs risk blocks readable by testers, PMs, and business stakeholders
-- **Two commands** — the entire pipeline runs exactly 2 shell commands; everything else is handled by Copilot
+- **Two commands** — clone and configure once, then just give a ticket ID
 
 ## Quick Start
 
@@ -17,20 +17,16 @@ Cross-service, risk-based PR analysis tool for QA teams. Automatically detects t
 ```bash
 git clone <this-repo-url> qa-workspace
 cd qa-workspace
-
-# Option A: interactive wizard (recommended)
 bash scripts/init.sh
-
-# Option B: copy and edit the example
-cp config.env.example config.env
 ```
 
 The wizard asks for:
 
 - Git provider (Bitbucket Server / Bitbucket Cloud / GitHub / GitLab)
 - Base repo URL (SSH or HTTPS)
-- Service names (comma-separated, or auto-detect from workspace)
+- Service repo names (match your repo names exactly)
 - JIRA project key prefix(es)
+- Test automation repo name (optional — enables test selection)
 - Performance tuning (parallelism, cache TTL)
 
 ### 2. Analyse a PR
@@ -38,7 +34,7 @@ The wizard asks for:
 Open VS Code Copilot Chat and say:
 
 ```
-Analyze PROJ-123 and post to PROJ-456
+Analyze PROJ-123
 ```
 
 That's it. Service repos are cloned automatically on first run. No manual git clone needed.
@@ -46,20 +42,23 @@ That's it. Service repos are cloned automatically on first run. No manual git cl
 ## How It Works
 
 ```
-You say: "Analyze PROJ-123 and post to PROJ-456"
+You say: "Analyze PROJ-123"
          │
-Step 1:  detect_services.sh — scans all repos in parallel
-         (cached remote refs → local commit search → branch name match)
+Step 1:  Fetch Jira ticket details (Atlassian MCP)
          │
-Step 2:  run_all_analyses.sh — runs per-service analysis in parallel
+Step 2:  Detect affected services from git log / branch names
+         (cached remote refs → local commit search → branch match)
+         │
+Step 3:  run_analysis_by_jira_id.sh — per-service analysis in parallel
          (fetch → diff → language-aware enhanced extraction)
          │
-Step 3:  Copilot reads summary.json + changes.diff per service
-         (signature changes, blast radius, removed features, test changes)
+Step 4:  analyze_dependencies.py — cross-service consolidation
+         (blast radius, shared impacts, risk scoring: HIGH/MEDIUM/LOW)
          │
-Step 4:  Generates 3–6 risk blocks in plain English (High / Medium only)
+Step 5:  index_tests.py + select_tests_for_pr.py — risk-based test selection
+         (skipped if TEST_REPOS not configured)
          │
-Step 5:  Preview → Confirm → Posts to JIRA verbatim
+Step 6:  generate_report.py — unified HTML report + CSV/Gherkin exports
 ```
 
 ## Language Support

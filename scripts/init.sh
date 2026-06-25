@@ -80,8 +80,15 @@ if [[ -z "$JIRA_KEY" ]]; then
   log_error "JIRA project key is required."; exit 1
 fi
 
-# ── Step 4: Performance ──────────────────────────────────────────────────────
-log_step "Step 4/4 — Performance"
+# ── Step 4: Test Automation Repo ─────────────────────────────────────────────
+log_step "Step 4/5 — Test Automation Repository"
+echo "Enter the name of your test automation repo (same base URL as services)."
+echo "  Example: my-automated-tests"
+echo "  Leave blank to skip (test selection will be unavailable)."
+read -rp "Test repo name: " TEST_REPOS
+
+# ── Step 5: Performance ──────────────────────────────────────────────────────
+log_step "Step 5/5 — Performance"
 read -rp "Max parallel service scans [4]: " MAX_PARALLEL
 MAX_PARALLEL="${MAX_PARALLEL:-4}"
 
@@ -109,6 +116,11 @@ SERVICES=$SERVICES_LIST
 # Project key prefix(es), comma-separated
 JIRA_PROJECT_KEYS=$JIRA_KEY
 
+# ── Test Automation Repo ──────────────────────────────────────────────────────
+# Repo name of the automation test suite (URL = REPO_BASE_URL/TEST_REPOS)
+# Leave blank to disable test selection (Mode 2)
+TEST_REPOS=${TEST_REPOS:-}
+
 # ── Performance ───────────────────────────────────────────────────────────────
 MAX_PARALLEL=$MAX_PARALLEL
 REF_CACHE_TTL=600
@@ -116,13 +128,39 @@ EOF
 
 echo ""
 log_ok "Configuration saved to: config.env"
+
+# ── Clone all configured service repos now (so analysis never waits on clone) ─
+log_step "Cloning all service repositories"
+source "$SCRIPT_DIR/lib/load_config.sh"
+clone_all_services
+
+# ── Build symbol index for instant cross-repo lookups ─────────────────────
+log_step "Building cross-repo symbol index (enables <2s impact analysis)"
+# Use Windows Python for NTFS repos (os.walk via WSL is ~100x slower)
+PYTHON_CMD="python3"
+if command -v python.exe &>/dev/null; then
+  PYTHON_CMD="python.exe"
+elif command -v /mnt/c/Users/anl/scoop/apps/python/current/python.exe &>/dev/null; then
+  PYTHON_CMD="/mnt/c/Users/anl/scoop/apps/python/current/python.exe"
+fi
+"$PYTHON_CMD" "$SCRIPT_DIR/lib/index_symbols.py" \
+    --repos-dir "$SERVICE_REPOS_DIR" \
+    --output "$SERVICE_REPOS_DIR/.symbol-index.json" || \
+  echo "[WARN] Symbol index build failed — analysis will fall back to grep scan" >&2
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Setup complete!"
 echo ""
 echo "  Next: Open VS Code → Copilot Chat → say:"
-echo "    \"Analyze JIRA-123 and post to JIRA-456\""
+echo "    \"Analyze PROJ-123\""
 echo ""
-echo "  Service repos are cloned automatically."
-echo "  No manual git clone needed."
+echo "  All service repos pre-cloned to .service-repos/"
+echo "  Analysis will git fetch (not clone) on each run."
+echo ""
+if [[ -n "${TEST_REPOS:-}" ]]; then
+  echo "  Test selection: enabled ($TEST_REPOS)"
+else
+  echo "  Test selection: skipped (no test repo configured)"
+fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
