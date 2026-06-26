@@ -1,65 +1,82 @@
 # PR Risk Analyser
 
-Cross-service, risk-based PR analysis tool for QA teams. Automatically detects testing risks across multiple repositories and languages, generates plain-English risk intelligence, and posts it directly to JIRA.
+Cross-service, risk-based PR analysis tool for QA teams. Automatically detects testing risks across multiple repositories and languages, generates plain-English risk intelligence, and renders a dark-themed HTML report directly in your browser.
 
 **Key features:**
 
 - **Project-agnostic** — works with any git-hosted project (Bitbucket, GitHub, GitLab)
 - **Multi-language** — auto-detects and analyses JS/TS, Java, Python, Go, C# (with generic fallback)
 - **Cross-service** — scans multiple repos in parallel, merges overlapping risks
-- **Plain English** — outputs risk blocks readable by testers, PMs, and business stakeholders
-- **Two commands** — clone and configure once, then just give a ticket ID
+- **Plain English** — outputs risk scenarios readable by testers, PMs, and business stakeholders
+- **One trigger** — configure once, then just type a ticket ID in VS Code Copilot Chat
+
+## Prerequisites
+
+- **VS Code** with **GitHub Copilot** (agent mode enabled)
+- **Atlassian MCP** server running and connected (provides Jira + Confluence access)
+- **WSL or Git Bash** (scripts require bash; on Windows use WSL or the bundled Git Bash terminal)
+- **Python 3.9+** in path (`python3`)
+- **Git** with SSH access to your service repositories
 
 ## Quick Start
 
-### 1. Clone and configure
+### 1. Configure
+
+Run the interactive setup wizard once per team/project:
 
 ```bash
-git clone <this-repo-url> qa-workspace
-cd qa-workspace
 bash scripts/init.sh
 ```
 
 The wizard asks for:
 
-- Git provider (Bitbucket Server / Bitbucket Cloud / GitHub / GitLab)
-- Base repo URL (SSH or HTTPS)
-- Service repo names (match your repo names exactly)
-- JIRA project key prefix(es)
+- Git provider (`bitbucket-server` | `bitbucket-cloud` | `github` | `gitlab`)
+- Base repo URL — everything before the repo name (e.g. `git@github.com:digital-adidas`)
+- Service repo names — must match actual repo names exactly (one per line)
+- JIRA project key prefix (e.g. `DTB`, `PROJ`)
 - Test automation repo name (optional — enables test selection)
-- Performance tuning (parallelism, cache TTL)
 
-### 2. Analyse a PR
+This writes `config.env` in the workspace root. Edit it any time to add/remove services.
 
-Open VS Code Copilot Chat and say:
+### 2. Analyse a ticket
+
+In **VS Code Copilot Chat** (PR-analyser mode), type the Jira ticket ID:
 
 ```
-Analyze PROJ-123
+DTB-17595
 ```
 
-That's it. Service repos are cloned automatically on first run. No manual git clone needed.
+That's it. Service repos are cloned automatically on first run into `.service-repos/`. No manual git clone needed.
+
+The report opens in your browser automatically when complete.
 
 ## How It Works
 
+The pipeline runs in three phases, fully orchestrated by the Copilot agent:
+
 ```
-You say: "Analyze PROJ-123"
-         │
-Step 1:  Fetch Jira ticket details (Atlassian MCP)
-         │
-Step 2:  Detect affected services from git log / branch names
-         (cached remote refs → local commit search → branch match)
-         │
-Step 3:  run_analysis_by_jira_id.sh — per-service analysis in parallel
-         (fetch → diff → language-aware enhanced extraction)
-         │
-Step 4:  analyze_dependencies.py — cross-service consolidation
-         (blast radius, shared impacts, risk scoring: HIGH/MEDIUM/LOW)
-         │
-Step 5:  index_tests.py + select_tests_for_pr.py — risk-based test selection
-         (skipped if TEST_REPOS not configured)
-         │
-Step 6:  generate_report.py — unified HTML report + CSV/Gherkin exports
+Phase 1 — Agent (MCP fetch)
+  ├── Fetch Jira issue (*all fields)
+  ├── Search Confluence for related pages (ticket ID + epic ID)
+  ├── Fetch full page content for each match
+  └── Write jira_issue.json + confluence_pages.json to pr-analysis/<JIRA_ID>/
+
+Phase 2 — Script (git diff + extraction)
+  ├── Detect affected services from git log (commit messages matching JIRA_ID)
+  ├── Per-service diff extraction in parallel (extract_enhanced.py)
+  ├── Cross-service dependency + blast-radius analysis (analyze_dependencies.py)
+  ├── QA risk profile generation (analyze_pr_with_profile.py)
+  ├── Test selection from automation repo (select_tests_for_pr.py)
+  └── Consolidate everything into agent_context.json (extract_agent_context.py)
+
+Phase 3 — Agent (report generation)
+  ├── Read agent_context.json (single file — no sequential reads)
+  ├── Generate grounded test scenarios from diff data
+  ├── Write dark-themed analysis_report.html (create_file tool)
+  └── Open report in browser
 ```
+
+**Important:** The agent generates scenarios grounded only in detected diff data — it does not invent behavior or architecture.
 
 ## Language Support
 
@@ -80,7 +97,7 @@ Multi-language PRs are supported — if a diff touches `.java` and `.ts` files, 
 
 Add a `LANG_*` dictionary in `scripts/lib/extract_enhanced.py` and register it in the `LANGUAGE_PROFILES` list. Each profile defines: `extensions`, `sig_pattern`, `import_pattern`, `export_patterns`, `test_file_pattern`, `test_block_pattern`, `assertion_pattern`, and file exclusion rules.
 
-Each service analysis produces a rich `summary.json`:
+Each service analysis produces a `summary.json`, which is then consolidated into `agent_context.json` — the single file the Copilot agent reads to generate the report:
 
 | Field | Description |
 |-------|-------------|
@@ -94,53 +111,60 @@ Each service analysis produces a rich `summary.json`:
 | `diff_stats` | `files_changed`, `lines_added`, `lines_removed`, `new_files`, `deleted_files` |
 | `commits` | Commit metadata (hash, author, date, subject) |
 
-## Jenkins CI
+## Output Files
 
-`Jenkinsfile-pr-analysis` provides a ready-to-use declarative pipeline with automatic credential detection:
+All files are written to `pr-analysis/<JIRA_ID>/`:
 
-**Features:**
-- **Auto-detects Git credentials** from your Pipeline SCM configuration — no hardcoding needed
-- **Parameters:** `JIRA_IDS` (required), `COMMIT_FILTER_MODE` (only/any), `GIT_CREDENTIAL_ID` (optional override)
-- **Stages:** Validate Input → Detect Services → Run Analysis → Archive Artifacts
-- **Artifacts:** `summary.json` files are archived automatically per service
+| File | Description |
+|------|-------------|
+| `jira_issue.json` | Normalised Jira ticket data (written by agent in Phase 1) |
+| `confluence_pages.json` | Related Confluence pages with full body text (Phase 1) |
+| `consolidated_summary.json` | Cross-service analysis with risk scores |
+| `qa_analysis.md` | Risk triggers and QA profile narrative |
+| `test_index.json` | Full test inventory from the automation repo |
+| `test_selection.json` | Tests selected proportional to risk (HIGH=100%, MED=70%, LOW=30%) |
+| `agent_context.json` | Lean combined context for the agent — single read replaces all others |
+| `analysis_report.html` | Final dark-themed report, auto-opened in browser |
 
-**Setup for Your Team (5 minutes):**
+## Script Reference
 
-1. **Create Pipeline Job** in Jenkins
-   - Select "Pipeline script from SCM"
-   - Configure your Git SCM URL and select your team's credential
-   - Set script path: `Jenkinsfile-pr-analysis`
-   - Jenkins will automatically use the same credential for service repo cloning
+The main script can be run directly (outside Copilot) for debugging or CI use:
 
-2. **Configure `config.env`** on Jenkins workspace (or commit it to a team branch):
-   ```bash
-   cp config.env.example config.env
-   # Edit with your Git provider, service repos, and JIRA keys
-   ```
+```bash
+bash scripts/run_analysis_by_jira_id.sh <JIRA_ID> [OPTIONS]
+```
 
-3. **Run builds:**
-   - Click "Build with Parameters"
-   - Enter JIRA IDs (e.g., `PROJ-123,PROJ-456`)
-   - Select filter mode
-   - Done!
+| Option | Description |
+|--------|-------------|
+| `--no-fetch` | Skip Jira gate check — use when `jira_issue.json` already exists |
+| `--no-report` | Skip `generate_report.py` — agent generates the HTML instead |
+| `--skip-tests` | Skip test selection and export steps |
+| `--filter-mode <any\|only>` | How commits are matched to the JIRA_ID (default: `any`) |
+| `--output-dir <path>` | Custom output directory (default: `pr-analysis/<JIRA_ID>`) |
 
-**Multi-Team Support:**
-Different teams can use the same Jenkinsfile with different credentials:
-- Team A: Uses credential `team-a-github` (auto-detected from their SCM config)
-- Team B: Uses credential `team-b-bitbucket` (auto-detected from their SCM config)
-- No Jenkinsfile modifications required ✅
+**Typical agent invocation (Phases 1+2):**
+```bash
+bash scripts/run_analysis_by_jira_id.sh DTB-17595 --no-fetch --no-report
+```
+
+## config.env Reference
+
+| Key | Description |
+|-----|-------------|
+| `GIT_PROVIDER` | `github` \| `gitlab` \| `bitbucket-server` \| `bitbucket-cloud` |
+| `REPO_BASE_URL` | SSH/HTTPS base URL before the repo name (e.g. `git@github.com:digital-adidas`) |
+| `SERVICE_DISCOVERY_MODE` | `manual` (uses `SERVICES` list) \| `auto` (scans `.service-repos/`) |
+| `SERVICES` | Comma-separated repo names to analyse |
+| `JIRA_PROJECT_KEYS` | Comma-separated project key prefixes (e.g. `DTB,PROJ`) |
+| `TEST_REPOS` | Automation test repo name — leave blank to disable test selection |
+| `MAX_PARALLEL` | Max parallel service analysis jobs (default: `4`) |
+| `REF_CACHE_TTL` | Remote ref cache lifetime in seconds (default: `600`) |
 
 ## Porting to Another Project
 
-This tool is designed to be reused across teams with zero code changes:
+The only project-specific file is `config.env` (gitignored). All scripts, the Copilot agent instructions, and the extraction engine work across any project, language, or git provider.
 
-1. **Fork/clone the repo** into your team's namespace
-2. **Create config:**
-   ```bash
-   cp config.env.example config.env
-   # Edit with your project's repos, git provider, and JIRA key
-   ```
-   Or run `bash scripts/init.sh` for the interactive wizard.
-3. **Set up Jenkins** (see above) or **use locally** via VS Code Copilot
-
-The only project-specific file is `config.env` (gitignored). Everything else — scripts, Copilot prompt, extraction engine — works across any project, language, or git provider.
+1. Copy this workspace to your team's machine
+2. Run `bash scripts/init.sh` to generate a fresh `config.env`
+3. Ensure your SSH key has read access to all repos listed in `SERVICES`
+4. Type a ticket ID in VS Code Copilot Chat — done

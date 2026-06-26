@@ -392,6 +392,18 @@ else
   fi
 fi
 
+# ── Step 5b: Extract lean agent context (eliminates sequential reads in Phase 3) ──
+AGENT_CONTEXT_FILE="$OUTPUT_DIR/agent_context.json"
+if python3 "$_LIB_DIR/extract_agent_context.py" \
+  --analysis-dir "$OUTPUT_DIR" \
+  --jira-id "$JIRA_ID" \
+  --output "$AGENT_CONTEXT_FILE" 2>>"$PIPELINE_LOG"; then
+  CTX_SIZE=$(python3 -c "import os; print(f'{os.path.getsize(\"$AGENT_CONTEXT_FILE\")/1024:.1f}')" 2>/dev/null || echo "?")
+  log_ok "Agent context extracted: ${CTX_SIZE} KB → $AGENT_CONTEXT_FILE"
+else
+  log_warn "Agent context extraction failed (see pipeline.log) — report generation will fall back to raw files"
+fi
+
 # ── Step 6: Generate unified report ──────────────────────────────────────
 log_step "Step 6: Generating unified analysis report"
 
@@ -426,6 +438,7 @@ log_info "📊 Generated files:"
 log_info "  • $JIRA_DETAILS"
 log_info "  • $CONSOLIDATED_FILE"
 log_info "  • $TEST_SELECTION_FILE"
+log_info "  • $AGENT_CONTEXT_FILE"
 if [[ $NO_REPORT -eq 0 ]]; then
   log_info "  • $REPORT_FILE"
 fi
