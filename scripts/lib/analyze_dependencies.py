@@ -773,6 +773,42 @@ def main():
             f"({high_count} HIGH, {med_count} MEDIUM)",
             file=sys.stderr,
         )
+        # Enrich transitive_impact using cross_repo_impact.
+        # The blast_radius-derived graph is intra-repo only and produces no cross-service
+        # edges (it greps symbol names, not service names). Use the AllReposRiskScanner
+        # results instead: map each matched term back to the service that changed it,
+        # then record the referencing repo as a transitive dependent of that service.
+        if cross_repo_risks:
+            term_to_service: Dict[str, str] = {}
+            for svc_name, analyzer in analyzers.items():
+                for sig in analyzer.signature_changes:
+                    func = sig.get("function", "").strip()
+                    if func:
+                        term_to_service[func] = svc_name
+                for feat in analyzer.removed_features:
+                    clean = feat.strip()
+                    if clean:
+                        term_to_service[clean] = svc_name
+                # Service name itself as a term
+                term_to_service[svc_name] = svc_name
+
+            ti = consolidated.setdefault("transitive_impact", {})
+            for entry in cross_repo_risks:
+                referencing_repo = entry.get("repo", "")
+                if not referencing_repo:
+                    continue
+                for term in entry.get("matched_terms", []):
+                    origin_svc = term_to_service.get(term)
+                    if origin_svc and referencing_repo != origin_svc:
+                        repos_list = ti.setdefault(origin_svc, [])
+                        if referencing_repo not in repos_list:
+                            repos_list.append(referencing_repo)
+            if any(ti.values()):
+                print(
+                    f"     Transitive impact enriched from cross-repo scan: "
+                    f"{sum(len(v) for v in ti.values())} service(s) downstream",
+                    file=sys.stderr,
+                )
     else:
         consolidated["cross_repo_impact"] = []
         if args.repos_dir:

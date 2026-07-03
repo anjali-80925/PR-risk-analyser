@@ -72,12 +72,19 @@ def normalize_confluence_pages(raw) -> list:
             return []
     pages = []
     for p in (raw if isinstance(raw, list) else raw.get("results", [])):
+        # Normalise content: may be a string (agent-written), a Confluence API dict
+        # {"value": "...", "representation": "storage"}, or a plain excerpt string.
+        content_field = p.get("content", "")
+        if isinstance(content_field, dict):
+            body = content_field.get("value", "")
+        else:
+            body = content_field or ""
         pages.append({
             "id": p.get("id", ""),
             "title": p.get("title", ""),
             "url": p.get("url", ""),
             "space": (p.get("space") or {}).get("key", ""),
-            "excerpt": p.get("excerpt", p.get("content", {}).get("value", "") if isinstance(p.get("content"), dict) else ""),
+            "excerpt": p.get("excerpt") or body,
         })
     return pages
 

@@ -54,9 +54,17 @@ class TestSelector:
 
             elif risk_level == "medium":
                 # MEDIUM RISK: Select feature-specific tests + 70% regression
+                # Derive changed feature/function names from high/medium_risk_changes for this service
+                service_features = [
+                    c.get("function", "") for c in self.consolidated.get("high_risk_changes", [])
+                    if c.get("service") == service and c.get("function")
+                ] + [
+                    c.get("feature", "") for c in self.consolidated.get("medium_risk_changes", [])
+                    if c.get("service") == service and c.get("feature")
+                ]
                 feature_tests = self._get_tests_by_feature(
                     tests_for_service,
-                    risk_data.get("changed_features", [])
+                    service_features
                 )
                 regression_tests = self._get_regression_pack(tests_for_service, ratio=0.7)
                 selected = set(t["id"] for t in feature_tests + regression_tests)
@@ -71,15 +79,20 @@ class TestSelector:
 
         # 2. Include auth/login tests ONLY if the PR directly touches auth/login/permission code
         # (not as a blanket "HIGH RISK detected" fallback — login UI tests don't cover API auth enforcement)
-        def _as_list(val):
-            return val if isinstance(val, list) else []
+        _AUTH_KWS = ("auth", "permission", "login", "cognito", "token", "role", "security", "access")
+
+        def _item_matches_auth(item: dict) -> bool:
+            return any(
+                kw in str(item.get("function", "")).lower()
+                or kw in str(item.get("file", "")).lower()
+                or kw in str(item.get("feature", "")).lower()
+                for kw in _AUTH_KWS
+            )
 
         auth_relevant_services = [
-            svc for svc, risk_data in service_risks.items()
-            if any(
-                any(kw in str(cf).lower() for kw in ("auth", "permission", "login", "cognito", "token", "role", "security", "access"))
-                for cf in _as_list(risk_data.get("changed_features")) + _as_list(risk_data.get("changed_files")) + _as_list(risk_data.get("removed_features"))
-            )
+            svc for svc in service_risks
+            if any(_item_matches_auth(c) for c in self.consolidated.get("high_risk_changes", []) if c.get("service") == svc)
+            or any(_item_matches_auth(c) for c in self.consolidated.get("medium_risk_changes", []) if c.get("service") == svc)
         ]
         if auth_relevant_services:
             auth_tests = self._get_tests_by_feature(
@@ -147,10 +160,13 @@ class TestSelector:
         """
         all_tests = self._all_tests()
 
-        # 1. Exact match
+        # 1. Exact match (also allow substring: "dtb-be" should match "b2bdtb-dtb-be")
         exact = [
             t for t in all_tests
-            if t.get("service") == service or service in t.get("tags", [])
+            if t.get("service") == service
+            or service in t.get("tags", [])
+            or (t.get("service") and t["service"] in service)
+            or (t.get("service") and service in t["service"])
         ]
         if exact:
             return exact
@@ -160,15 +176,17 @@ class TestSelector:
         svc_stripped = service
         for prefix in ("b2bdtb-digital-toolbox-", "b2bdtb-dtb-", "b2bdtb-", "digital-toolbox-", "dtb-", "svc-"):
             svc_stripped = svc_stripped.replace(prefix, "", 1) if svc_stripped.startswith(prefix) else svc_stripped
-        keywords = [k for k in svc_stripped.split("-") if len(k) > 3]
+        keywords = [k for k in svc_stripped.split("-") if len(k) > 1]
         if keywords:
             keyword_matched = [
                 t for t in all_tests
-                if any(kw in (t.get("file", "") + t.get("feature", "") + " ".join(t.get("tags", []))).lower()
-                       for kw in keywords)
+                if any(
+                    kw in (t.get("file", "") + t.get("feature", "") + " ".join(t.get("tags", [])) + t.get("service", "")).lower()
+                    for kw in keywords)
             ]
             if keyword_matched:
-                return keyword_matched
+                matched_dirs = {str(Path(t["file"]).parent) for t in keyword_matched}
+                return [t for t in all_tests if str(Path(t["file"]).parent) in matched_dirs]
 
         # No match — return empty; do not fall back to the full suite
         return []

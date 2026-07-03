@@ -24,7 +24,9 @@ NOISE_TAGS = {"fixtures", "test", "pages", "TEST_DTB", "Navigation1", "Marketing
 
 def _load_json(path, default=None):
     try:
-        with open(path, encoding="utf-8") as f:
+        # utf-8-sig strips a UTF-8 BOM if present (PowerShell Set-Content -Encoding UTF8
+        # writes a BOM; plain utf-8 silently fails on those files, returning the default).
+        with open(path, encoding="utf-8-sig") as f:
             return json.load(f)
     except Exception:
         return default if default is not None else {}
@@ -121,14 +123,16 @@ def build_context(analysis_dir: Path, jira_id: str) -> dict:
     confluence_pages = _load_json(analysis_dir / "confluence_pages.json", default=[])
     confluence_summaries = [
         {"title": p.get("title", ""), "url": p.get("url", ""),
-         "snippet": (p.get("content") or "")[:300]}
+         "snippet": (p.get("content") or p.get("excerpt") or "")[:800]}
         for p in (confluence_pages if isinstance(confluence_pages, list) else [])
     ]
 
     # ── Consolidated summary ────────────────────────────────────────────────
     consolidated = _load_json(analysis_dir / "consolidated_summary.json")
     risk_summary = consolidated.get("risk_summary", {})
-    cross_service_impacts = consolidated.get("cross_service_impact", [])
+    cross_service_impacts = consolidated.get("cross_repo_impact", [])
+    # Map of service_name -> risk_level from the scored analysis
+    service_risks_map = consolidated.get("service_risks", {})
 
     # Condense cross-service impacts — keep only high-impact repos
     cross_service_condensed = []
@@ -165,9 +169,11 @@ def build_context(analysis_dir: Path, jira_id: str) -> dict:
         ][:20]
         blast_radius = svc_summary.get("blast_radius", [])
         changed_files = svc_summary.get("changed_files", [])
-        risk_level = svc_summary.get("risk_level") or (
-            "HIGH" if len(changed_files) > 50 else
-            "MEDIUM" if len(changed_files) > 10 else "LOW"
+        # Read risk level from the scored consolidated analysis; fall back to file-count heuristic
+        risk_level = (
+            service_risks_map.get(service_name, {}).get("risk_level")
+            or svc_summary.get("risk_level")
+            or ("HIGH" if len(changed_files) > 50 else "MEDIUM" if len(changed_files) > 10 else "LOW")
         )
 
         # Condensed diff (only +/- lines, capped at 120 lines)
@@ -196,7 +202,16 @@ def build_context(analysis_dir: Path, jira_id: str) -> dict:
     clean_cases = []
     for tc in raw_cases:
         clean_cases.append({
-            "testCase": tc.get("testCase") or tc.get("test_name") or tc.get("name", ""),
+            # 'name' is the common field written by all frameworks in index_tests.py.
+            # Framework-specific fallbacks: jest=testCase, pytest=function, junit=method, gherkin=scenario
+            "testCase": (
+                tc.get("name")
+                or tc.get("testCase")
+                or tc.get("function")
+                or tc.get("method")
+                or tc.get("scenario")
+                or tc.get("test_name", "")
+            ),
             "file": tc.get("file", ""),
             "tags": _clean_tags(tc.get("tags", [])),
             "risk": tc.get("risk", ""),

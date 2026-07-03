@@ -242,6 +242,7 @@ _scan_one_service() {
     --service "$service" \
     --jira "$JIRA_ID" \
     --diff "$diff_file" \
+    --repo "$LOCAL_REPO" \
     --out "$svc_dir" >> "$svc_log" 2>&1; then
     echo "extract_failed" > "$status_file"
     return

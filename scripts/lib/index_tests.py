@@ -106,11 +106,35 @@ class TestIndexer:
         return tests
 
     def _extract_service_name(self, file_path: Path) -> str:
-        """Extract service name from file path"""
-        # Look for patterns: dtb-*, digital-toolbox-*, coi-*
-        service_pattern = r"(dtb-[\w-]+|digital-toolbox-[\w-]+|coi-[\w-]+)"
-        match = re.search(service_pattern, str(file_path))
-        return match.group(1) if match else ""
+        """Extract service name from file path.
+
+        Strategy (first match wins):
+        1. Scan path parts from innermost to outermost for known service prefixes.
+           This catches a subdirectory like 'dtb-be' before the repo root
+           'b2bdtb-dtb-automated-tests'.
+        2. Check the first 500 bytes of the file for an @service:<name> annotation.
+        3. Fall back to the first path part (from innermost) that contains a hyphen
+           and is not a generic directory name.
+        """
+        service_pattern = re.compile(
+            r"^(b2bdtb-[\w-]+|dtb-[\w-]+|digital-toolbox-[\w-]+|coi-[\w-]+)$"
+        )
+        # 1. Reversed path parts (file name itself excluded)
+        for part in reversed(file_path.parts[:-1]):
+            if service_pattern.match(part):
+                return part
+
+        # 2. @service: annotation in file header
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as _f:
+                head = _f.read(500)
+            m = re.search(r"@service[:\s]+([\w][\w-]*)", head)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+
+        return ""
 
     def _parse_pytest(self, file_path: Path, content: str, service: str) -> List[Dict]:
         """Extract test cases from pytest file"""
@@ -122,14 +146,15 @@ class TestIndexer:
         test_functions = re.findall(test_func_pattern, content)
 
         # Extract decorator/comment tags: @tag, # @service:*, # @feature:*, # @risk:*
-        tags = re.findall(r"@(\w+(?::\w+)?)", content)
+        tags  = list(dict.fromkeys(re.findall(r"@(\w+(?::\w+)?)", content)))
         
         # Extract marks: @pytest.mark.service_auth, etc.
-        marks = re.findall(r"@pytest\.mark\.(\w+)", content)
+        marks = list(dict.fromkeys(re.findall(r"@pytest\.mark\.(\w+)", content)))
 
         for test_func in test_functions:
             test_data = {
                 "id": f"{file_path.stem}::{test_func}",
+                "name": test_func,
                 "file": str(file_path.relative_to(self.repo_path)),
                 "framework": "pytest",
                 "function": test_func,
@@ -153,18 +178,21 @@ class TestIndexer:
         test_cases = re.findall(test_pattern, content)
 
         # Extract tags from comments
-        tags = re.findall(r"@(\w+(?::\w+)?)", content)
+        file_tags = list(dict.fromkeys(re.findall(r"@(\w+(?::\w+)?)", content)))
 
         for test_case in test_cases:
+            inline_tags = list(dict.fromkeys(re.findall(r"@(\w+(?::\w+)?)", test_case)))
+            effective_tags = inline_tags if inline_tags else file_tags
             test_data = {
                 "id": f"{file_path.stem}::{test_case}",
+                "name": test_case,
                 "file": str(file_path.relative_to(self.repo_path)),
                 "framework": "jest",
                 "testCase": test_case,
-                "tags": tags or [f"@service:{service}"],
+                "tags": effective_tags or [f"@service:{service}"],
                 "service": service or "unknown",
-                "feature": self._extract_feature_from_tags(tags),
-                "risk": self._extract_risk_from_tags(tags),
+                "feature": self._extract_feature_from_tags(effective_tags),
+                "risk": self._extract_risk_from_tags(effective_tags),
             }
             tests.append(test_data)
 
@@ -184,11 +212,12 @@ class TestIndexer:
         class_name = class_match.group(1) if class_match else "Unknown"
 
         # Extract tags
-        tags = re.findall(r"@(\w+(?::\w+)?)", content)
+        tags = list(dict.fromkeys(re.findall(r"@(\w+(?::\w+)?)", content)))
 
         for test_method in test_methods:
             test_data = {
                 "id": f"{class_name}::{test_method}",
+                "name": test_method,
                 "file": str(file_path.relative_to(self.repo_path)),
                 "framework": "junit",
                 "class": class_name,
@@ -211,18 +240,20 @@ class TestIndexer:
         scenarios = re.findall(scenario_pattern, content, re.DOTALL)
 
         # Extract tags
-        tags = re.findall(r"@(\w+(?::\w+)?)", content)
+        tags = list(dict.fromkeys(re.findall(r"@(\w+(?::\w+)?)", content)))
 
         for scenario in scenarios:
             # Extract feature name
             feature_match = re.search(r"Feature:\s+(.+?)$", content, re.MULTILINE)
             feature = feature_match.group(1) if feature_match else "Unknown"
 
+            scenario_title = scenario.split("\n")[0].strip()
             test_data = {
-                "id": f"{file_path.stem}::{scenario.split(chr(10))[0][:50]}",
+                "id": f"{file_path.stem}::{scenario_title[:50]}",
+                "name": scenario_title,
                 "file": str(file_path.relative_to(self.repo_path)),
                 "framework": "gherkin",
-                "scenario": scenario.split("\n")[0],
+                "scenario": scenario_title,
                 "feature": feature,
                 "tags": tags or [f"@service:{service}"],
                 "service": service or "unknown",

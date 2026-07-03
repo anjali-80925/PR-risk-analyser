@@ -63,24 +63,26 @@ Do **not** call `mcp_atlassian_jira_get_issue_development_info` — affected ser
 **Do NOT use `--jira-json` shell argument** (breaks on Windows due to quoting). Instead write the files directly using `run_in_terminal`:
 
 ```powershell
-# Create output dir
-New-Item -ItemType Directory -Force -Path "c:\Users\anl\qa-workspace\pr-analysis\<JIRA_ID>" | Out-Null
+# Output goes into the workspace pr-analysis folder — this is where the pipeline scripts expect it.
+# IMPORTANT: always use $outDir for every path; never write to a different location.
+$outDir = "c:\Users\anl\Downloads\DTB\dtb automation\PR-analyser\PR-analyser\pr-analysis\<JIRA_ID>"
+New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 # Write jira_issue.json — construct a clean normalized JSON object, NOT the raw MCP response
 # Required fields: key, summary, status, priority, issue_type, assignee, description
 # Do NOT include affected_services[] — the script detects services from git commits automatically
 $json = '<normalized_jira_object_as_json_string>'
-$json | Set-Content -Path "c:\Users\anl\qa-workspace\pr-analysis\<JIRA_ID>\jira_issue.json" -Encoding UTF8
+$json | Set-Content -Path "$outDir\jira_issue.json" -Encoding UTF8
 
 # Write confluence_pages.json — must include full page body content, not just metadata
 # Each entry: { "id": "", "title": "", "url": "", "content": "<full body text>" }
 $pages = '<confluence_array_with_full_content_as_json_string>'
-$pages | Set-Content -Path "c:\Users\anl\qa-workspace\pr-analysis\<JIRA_ID>\confluence_pages.json" -Encoding UTF8
+$pages | Set-Content -Path "$outDir\confluence_pages.json" -Encoding UTF8
 ```
 
 ### Step 1.4 — Verify
 ```powershell
-Test-Path "c:\Users\anl\qa-workspace\pr-analysis\<JIRA_ID>\jira_issue.json"
+Test-Path "$outDir\jira_issue.json"
 ```
 Must return `True` before proceeding to Phase 2.
 
@@ -143,7 +145,7 @@ Use it directly. Do NOT re-read `test_selection.json`.
 This data MUST be embedded inline in the HTML — **never use `fetch()` or any network request to load it**. `fetch()` is blocked by browsers for `file://` URLs and will always fail.
 
 ### Step 3.3 — Write report to HTML and open in browser
-Write the full risk report as a dark-themed HTML file to `c:\Users\anl\qa-workspace\pr-analysis\<JIRA_ID>\analysis_report.html` using the **`create_file` tool** (filePath + content). Do NOT use `run_in_terminal` or PowerShell here-strings to write the HTML — `create_file` writes the file directly without shell escaping issues.
+Write the full risk report as a dark-themed HTML file to `c:\Users\anl\Downloads\DTB\dtb automation\PR-analyser\PR-analyser\pr-analysis\<JIRA_ID>\analysis_report.html` using the **`create_file` tool** (filePath + content). Do NOT use `run_in_terminal` or PowerShell here-strings to write the HTML — `create_file` writes the file directly without shell escaping issues.
 
 The **Selected Automation Tests** section must render inline — replace `fetch()` with an embedded `<script>` block:
 ```html
@@ -170,7 +172,7 @@ Populate `TEST_SELECTION_DATA` with `agent_context.test_selection.test_cases` (a
 
 **Do NOT display the report content in the chat.** After writing with `create_file`, open it immediately:
 ```powershell
-Start-Process "c:\Users\anl\qa-workspace\pr-analysis\<JIRA_ID>\analysis_report.html"
+Start-Process "c:\Users\anl\Downloads\DTB\dtb automation\PR-analyser\PR-analyser\pr-analysis\<JIRA_ID>\analysis_report.html"
 ```
 Then post a brief 2-3 line summary in chat: ticket title, services with PRs, total scenarios, and a note on the biggest risk.
 

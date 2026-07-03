@@ -289,9 +289,12 @@ def parse_diff(diff_text: str) -> dict:
         parts = git_line.split()
         return parts[-1].lstrip('/') if parts else None
 
+    def _is_phantom(f: str) -> bool:
+        return f is None or "/dev/null" in f or f.startswith("+++ ")
+
     for line in diff_text.splitlines():
         if line.startswith('diff --git'):
-            if current_file:
+            if current_file and not _is_phantom(current_file):
                 files[current_file] = '\n'.join(current_lines)
             current_file = _extract_filename(line)
             current_lines = [line]
@@ -304,14 +307,19 @@ def parse_diff(diff_text: str) -> dict:
                     current_file = refined
             current_lines.append(line)
 
-    if current_file:
+    if current_file and not _is_phantom(current_file):
         files[current_file] = '\n'.join(current_lines)
 
     return files
 
 
 def get_changed_files(file_diffs: dict, should_exclude) -> list:
-    return sorted(f for f in file_diffs if not should_exclude(f))
+    return sorted(
+        f for f in file_diffs
+        if not should_exclude(f)
+        and "/dev/null" not in f
+        and not f.startswith("+++ ")
+    )
 
 
 def get_diff_stats(file_diffs: dict, should_exclude) -> dict:
@@ -584,6 +592,12 @@ def _similar_context(line_a: str, line_b: str) -> bool:
 def find_blast_radius(file_diffs: dict, repo_path: str, changed_files: list,
                       profiles: list, should_exclude) -> list:
     if not repo_path or not os.path.isdir(repo_path):
+        if not repo_path:
+            print("[blast_radius] SKIP: --repo not provided; intra-repo impact analysis skipped",
+                  file=sys.stderr)
+        else:
+            print(f"[blast_radius] SKIP: repo path does not exist: {repo_path}",
+                  file=sys.stderr)
         return []
 
     # Collect exported names using per-file profile
