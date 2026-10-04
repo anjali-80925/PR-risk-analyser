@@ -30,12 +30,11 @@ def detect_feature_areas(changed_files: List[str], new_statuses: List, removed_f
     def has_any(*patterns: str) -> bool:
         return any(has(p) for p in patterns)
 
-    # Extract new marketplace/country values added to CM_Constants
+    # Extract new constant values added to config/constants files
     new_countries = [
         (v.get("value", v) if isinstance(v, dict) else str(v))
         for v in new_statuses
-        if isinstance(v, dict) and "CM_Constants" in v.get("file", "")
-        and v.get("value", "") not in ("removeFeOnlyProperties",)
+        if isinstance(v, dict) and "constants" in v.get("file", "").lower()
         and not v.get("value", "").startswith("should ")
     ]
     country_list = ", ".join(new_countries[:10]) + ("…" if len(new_countries) > 10 else "")
@@ -47,19 +46,17 @@ def detect_feature_areas(changed_files: List[str], new_statuses: List, removed_f
     areas = []
 
     # ── Microservice Migration detection ───────────────────────────────
-    # Triggers when endpoints are explicitly migrated out of DTB-BE
+    # Triggers when endpoints are explicitly migrated out of a monolith
     _is_microservice_migration = (
-        was_removed("removed from dtb-be") or
+        was_removed("removed from") or
         was_removed("migrated to") or
-        has_any("iconographyapi", "cimaterial", "searchicono") or
         (was_removed("route removed") and has("api"))
     )
     if _is_microservice_migration:
-        # Identify the service name from removed_features
         _svc_name = "new microservice"
         for r in removed_lower:
-            if "digital-toolbox-svc-" in r:
-                _svc_name = r.split("digital-toolbox-svc-")[1].split()[0]
+            if "svc-" in r:
+                _svc_name = r.split("svc-")[1].split()[0]
                 break
 
         areas.append({
@@ -67,12 +64,12 @@ def detect_feature_areas(changed_files: List[str], new_statuses: List, removed_f
             "name": "API Route Change",
             "emoji": "🔀",
             "risk": "HIGH",
-            "description": f"FE route changed from /api/iconography → /iconography. All API calls must use the new base path pointing to {_svc_name}.",
-            "regression_guard": "Search icons — Network tab shows /iconography/searchIconography (NOT /api/iconography/...)",
+            "description": f"API routes migrated to {_svc_name}. All API calls must use the new base path.",
+            "regression_guard": "Network tab shows requests hitting the new service route, not the old monolith path",
             "scenarios": [
-                "Open Iconography module → search for any icon → Network tab: request hits /iconography/... (new route), not /api/iconography/...",
-                "Old route /api/iconography returns 404 — no silent fallback keeping old service alive",
-                "Auth header present on new route: Authorization: Bearer <token> in each request to /iconography/...",
+                "Use the migrated feature → Network tab: requests hit new route, not old monolith path",
+                "Old route returns 404 — no silent fallback keeping old service alive",
+                "Auth header present on new route: Authorization: Bearer <token> in each request",
             ],
         })
         areas.append({
@@ -80,25 +77,11 @@ def detect_feature_areas(changed_files: List[str], new_statuses: List, removed_f
             "name": "Migrated Endpoints — Functional Parity",
             "emoji": "⚙️",
             "risk": "HIGH",
-            "description": "searchIconography and searchCIMaterials moved from DTB-BE to new microservice. Response contract must be identical — same fields, same pagination, same error codes.",
-            "regression_guard": "searchIconography response has same top-level fields as before (id, name, imageUrl, category) — no missing fields",
+            "description": f"Endpoints moved to {_svc_name}. Response contract must be identical — same fields, same pagination, same error codes.",
+            "regression_guard": "Migrated endpoint response has same top-level fields as before — no missing fields",
             "scenarios": [
-                "Search iconography with various filters (keyword, category, type) → results load with same data structure as before migration",
-                "searchCIMaterials → CI material results return same response shape (id, materialCode, images array)",
+                "Call migrated endpoints with various filters → results load with same data structure as before migration",
                 "Empty search or no-match query → returns empty result set (not 500 from new service)",
-            ],
-        })
-        areas.append({
-            "id": "MIGRATE-IMAGES",
-            "name": "IconographyImageService — Image Loading",
-            "emoji": "🖼️",
-            "risk": "HIGH",
-            "description": "IconographyImageService migrated to new microservice. Image serving must work end-to-end via new service.",
-            "regression_guard": "Select any icon/logo in Iconography module — full-size image renders without broken placeholder",
-            "scenarios": [
-                "Open any icon → full-size image loads (no broken-image placeholder, no CORS error in console)",
-                "Download icon/logo → file downloads correctly from new service endpoint",
-                "Multiple concurrent image loads → no race condition or partial load failure",
             ],
         })
         areas.append({
@@ -106,305 +89,243 @@ def detect_feature_areas(changed_files: List[str], new_statuses: List, removed_f
             "name": "Auth & Access Control on New Service",
             "emoji": "🔐",
             "risk": "MEDIUM",
-            "description": "New microservice has auth/authZ plugged in (DTB-17865 Closed). Must verify tokens accepted and roles enforced.",
-            "regression_guard": "Logged-in user opens Iconography — no 401/403 returned by new service",
+            "description": f"New microservice ({_svc_name}) must have auth/authZ configured. Verify tokens accepted and roles enforced.",
+            "regression_guard": "Logged-in user accesses migrated feature — no 401/403 returned by new service",
             "scenarios": [
-                "Logged-in user accesses Iconography → no 401 Unauthorized from new service endpoints",
+                "Logged-in user accesses migrated feature → no 401 Unauthorized from new service endpoints",
                 "Expired session or no token → 401 returned (not silently broken page)",
-                "User without Iconography permission → access is blocked (role enforcement still works on new service)",
-            ],
-        })
-        areas.append({
-            "id": "MIGRATE-USER-MAINT",
-            "name": "Module-Specific User Maintenance Page",
-            "emoji": "👤",
-            "risk": "MEDIUM",
-            "description": "FE implements module-specific User Maintenance page for Iconography when deploying independent module.",
-            "regression_guard": "User Maintenance page loads for Iconography module without errors",
-            "scenarios": [
-                "Navigate to User Maintenance → Iconography section renders correctly (no blank/broken component)",
-                "User management actions (add/remove user role) work correctly for Iconography module",
+                "User without permission → access is blocked (role enforcement works on new service)",
             ],
         })
 
-    # ── Iconography & Tooltips (visual FE component changes only) ──────
-    if has_any("logosandicons", "iconwithtooltip", "iconswithtooltip") and not _is_microservice_migration:
+    # ── Icons & Tooltips (visual FE component changes only) ────────────
+    if has_any("icon", "tooltip", "logo") and not _is_microservice_migration:
         areas.append({
             "id": "ICON",
-            "name": "Iconography & Tooltips",
+            "name": "Icons & Tooltips",
             "emoji": "🎨",
             "risk": "LOW",
             "description": "Icon stylesheet and tooltip wrapper components updated. Visual-only changes — check rendering across all pages.",
-            "regression_guard": "Hover any info tooltip on Channel Management — tooltip appears and dismisses correctly",
+            "regression_guard": "Hover any info tooltip — tooltip appears and dismisses correctly",
             "scenarios": [
-                "All module pages (CM, PA, Syndication, R&R) — no broken icon placeholders, no missing glyphs",
+                "All module pages — no broken icon placeholders, no missing glyphs",
                 "Tooltips on action/info buttons appear on hover and disappear on mouse-out (no tooltip stuck open)",
             ],
-            "affected_pages": ["Header", "Channel Management", "Product Assets", "Syndication", "Ratings & Reviews"],
             "ui_steps": [
-                {"step": "Check icons across all pages", "action": "Navigate to: Channel Management → Product Assets → Syndication Management → Ratings & Reviews → verify all icons render with no broken placeholders or missing glyphs", "verify": "All icons visible, correctly sized, no blank squares or default browser image icons", "risk": "LOW"},
-                {"step": "Hover tooltips", "action": "Hover over each icon that shows a tooltip (info icons, action buttons, status icons) on Channel Management and Product Assets", "verify": "Tooltip text appears correctly, is readable, does not overflow off-screen, and disappears on mouse-out", "risk": "LOW"},
+                {"step": "Check icons across all pages", "action": "Navigate through main pages → verify all icons render with no broken placeholders or missing glyphs", "verify": "All icons visible, correctly sized, no blank squares or default browser image icons", "risk": "LOW"},
+                {"step": "Hover tooltips", "action": "Hover over each icon that shows a tooltip (info icons, action buttons, status icons)", "verify": "Tooltip text appears correctly, is readable, does not overflow off-screen, and disappears on mouse-out", "risk": "LOW"},
                 {"step": "Check dark/light mode rendering", "action": "If the app supports theme toggle — switch theme and recheck icon visibility", "verify": "Icons visible in both themes; no pure-white icon on white background or pure-black on black background", "risk": "LOW"},
             ],
             "api_steps": []
         })
 
-    # ── Locale Constants — New Locales Added ───────────────────────────
-    if has_any("localizationconstants", "getlocalizationresponse", "localeconstants"):
+    # ── Locale / i18n Constants — New Locales Added ────────────────────
+    if has_any("localization", "locale", "i18n"):
         areas.append({
             "id": "LOCALE-CONST",
             "name": "Locale Constants — New Locale Definitions",
             "emoji": "🌍",
             "risk": "HIGH",
-            "description": "New locale codes added (de-CH, en-AU, en-CA, en-FI, en-KR, en-NZ, fr-CA, fil-PH, bg-BG, lt-LT, lv-LV, hu-HU, et-EE, uk-UA, sl-SI, nl-BE, es-PA, en-SG, ms-MY, en-PH, zh-HK, zh-TW) and existing locale display names renamed to match PIM.",
-            "regression_guard": "PA Descriptions locale dropdown contains de-CH, en-AU, en-CA (Table-1 locales selectable)",
+            "description": "Locale/i18n constants updated. Verify new locale codes are selectable and content loads correctly.",
+            "regression_guard": "Locale dropdown contains newly added locale codes",
             "scenarios": [
-                "New locale codes selectable in PA locale dropdown: de-CH, en-AU, en-CA, fil-PH, bg-BG, en-SG, zh-HK, zh-TW (Table-1 & Table-2)",
-                "Renamed locale display names match PIM per Table-3 — 'Czech (Czech Republic)' not 'Czech', 'German (Germany)' not 'German'",
+                "New locale codes selectable in locale dropdown",
+                "Locale display names are correct and match expected format",
                 "Select new locale → content loads or graceful empty state shown (no 400 error, no blank screen)",
             ],
-            "affected_pages": ["Product Assets — Description page", "Product Assets — Size Guide page", "Channel Management — Description Step"],
             "ui_steps": [
-                {"step": "Verify new locale codes appear in locale dropdown", "action": "Open Product Assets → select any product → open the locale/language selector dropdown", "verify": "All newly added locale codes are selectable: de-CH (German Switzerland), en-AU (English Australia), en-CA (English Canada), en-FI (English Finland), en-KR (English South Korea), en-NZ (English New Zealand), fr-CA (French Canada), fil-PH (Filipino)", "risk": "HIGH"},
-                {"step": "Verify PDX locale codes appear", "action": "In locale dropdown continue scrolling → look for: bg-BG, lt-LT, lv-LV, hu-HU, et-EE, uk-UA, sl-SI, nl-BE, es-PA, en-SG, ms-MY, en-PH, zh-HK, zh-TW", "verify": "All PDX locales listed above are present and selectable in the dropdown", "risk": "HIGH"},
-                {"step": "Verify renamed locale display names", "action": "In locale dropdown → find locales that were renamed: look for 'Czech (Czech Republic)' instead of 'Czech', 'German (Germany)' instead of 'German', 'English (United Kingdom)' instead of 'English'", "verify": "Display names match PIM locale names exactly per Table-3 in ticket. Old names (e.g. plain 'Czech', plain 'German') no longer shown", "risk": "HIGH"},
-                {"step": "Select a newly added locale and load content", "action": "Select locale 'de-CH' (German Switzerland) → load product descriptions", "verify": "Content loads for that locale without error; if no content exists, a meaningful 'no content' message is shown (not a blank/broken UI)", "risk": "HIGH"},
+                {"step": "Verify new locale codes appear in locale dropdown", "action": "Open locale/language selector dropdown", "verify": "All newly added locale codes are present and selectable", "risk": "HIGH"},
+                {"step": "Select a newly added locale and load content", "action": "Select a new locale → load page content", "verify": "Content loads without error; if no content exists, a meaningful 'no content' message is shown (not a blank/broken UI)", "risk": "HIGH"},
             ],
             "api_steps": [
-                {"endpoint": "GET /api/locales", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "Response includes all new locale codes (de-CH, en-AU, en-CA, fil-PH, bg-BG, en-SG, zh-HK, zh-TW, etc.); display names match PIM names (e.g. 'Czech (Czech Republic)' not 'Czech')", "risk": "HIGH"},
-                {"endpoint": "GET /api/product-assets/{id}/descriptions?locale=de-CH", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {"productId": "{id}", "locale": "de-CH"}, "verify": "Returns description content for the new locale; no 400/404 error for the new locale code", "risk": "HIGH"},
+                {"endpoint": "GET /api/locales", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "Response includes all new locale codes with correct display names", "risk": "HIGH"},
             ]
         })
 
-    # ── Product Assets — Locale Support ────────────────────────────────
-    if has_any("productassets", "sizeguide", "descriptiontable", "downloadimagemodal", "downloadvideomodal"):
+    # ── Asset Management — Locale Support ───────────────────────────────
+    if has_any("assets", "description", "download"):
         areas.append({
-            "id": "PA-LOCALE",
-            "name": "Product Assets — Locale-aware Description & Size Guide",
+            "id": "ASSET-LOCALE",
+            "name": "Asset Management — Locale-aware Content",
             "emoji": "🖼️",
             "risk": "HIGH",
-            "description": "Product Assets Description and Size Guide pages updated to support new locales. Locale dropdown on PA page must show all new locale codes.",
-            "regression_guard": "Select en-AU in PA Size Guide tab — page loads without JS error (linked test: DTB-16987)",
+            "description": "Asset pages updated to support new locales. Locale dropdown must show all new locale codes.",
+            "regression_guard": "Select a new locale on asset page — page loads without JS error",
             "scenarios": [
-                "PA Descriptions AND Size Guide locale dropdowns contain all new locales from Table-1/Table-2 (run DTB-16985, DTB-16987)",
-                "UI headers use browser UI language, NOT selected content locale — AC3 (change UI lang to German, open PA, headers in German regardless of locale selected)",
+                "Locale dropdowns contain all new locale codes",
+                "UI headers use browser UI language, NOT selected content locale",
                 "Selecting new locale that has no content → meaningful empty state, not a white screen or 500 error",
             ],
-            "affected_pages": ["Product Assets → Description tab", "Product Assets → Size Guide tab"],
             "ui_steps": [
-                {"step": "Open Product Assets for a product and check locale dropdown", "action": "Go to Product Assets → select any product → click on Description tab → open locale selector", "verify": "All new locale codes appear in the dropdown (de-CH, en-AU, en-CA, fil-PH, bg-BG, en-SG, etc.); existing locale names are updated (e.g. 'Czech (Czech Republic)' not 'Czech')", "risk": "HIGH"},
-                {"step": "Switch locale and verify description content loads", "action": "Select a newly added locale (e.g. 'en-AU — English (Australia)') → observe Description tab content", "verify": "Content loads for that locale or a 'no content available' message shown; no JS error or blank white area", "risk": "HIGH"},
-                {"step": "Open Size Guide and check locale support", "action": "On same product → click Size Guide tab → open locale selector", "verify": "New locales also appear in Size Guide locale dropdown; selecting a new locale loads size guide data correctly", "risk": "HIGH"},
-                {"step": "Verify header translation by UI language, not by locale selection", "action": "Change UI language in app settings (e.g. to German) → open Product Assets → check column headers and attribute names", "verify": "Headers are translated based on the UI language setting, NOT based on the locale selected for content. E.g. if UI language = German, headers show in German regardless of which locale content is selected", "risk": "HIGH"},
-                {"step": "Download image modal", "action": "Click download image on a product asset → modal opens", "verify": "Modal opens, image options render correctly, download works", "risk": "LOW"},
-                {"step": "Download video modal", "action": "Click download video on a product asset → modal opens", "verify": "Video download modal opens, correct options shown, download completes", "risk": "LOW"},
+                {"step": "Check locale dropdown on asset page", "action": "Open asset page → select any item → open locale selector", "verify": "All new locale codes appear in the dropdown", "risk": "HIGH"},
+                {"step": "Switch locale and verify content loads", "action": "Select a newly added locale → observe content area", "verify": "Content loads for that locale or a 'no content available' message shown; no JS error or blank white area", "risk": "HIGH"},
+                {"step": "Download asset modal", "action": "Click download on an asset → modal opens", "verify": "Modal opens, options render correctly, download works", "risk": "LOW"},
             ],
             "api_steps": [
-                {"endpoint": "GET /api/product-assets/{id}/descriptions?locale=en-AU", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {"productId": "{id}", "locale": "en-AU"}, "verify": "200 OK with description data; or empty array with 200 if no content for this locale (NOT a 4xx error)", "risk": "HIGH"},
-                {"endpoint": "GET /api/product-assets/{id}/size-guide?locale=de-CH", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {"productId": "{id}", "locale": "de-CH"}, "verify": "Returns size guide data for new locale; response has expected structure (categories, sizes array)", "risk": "HIGH"},
+                {"endpoint": "GET /api/assets/{id}/descriptions?locale={locale}", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {"id": "{id}", "locale": "{locale}"}, "verify": "200 OK with content data; or empty array with 200 if no content for this locale (NOT a 4xx error)", "risk": "HIGH"},
             ]
         })
 
-    # ── Channel Management — Description Locale Unification ────────────
-    if has_any("steptwo", "descriptioncontent", "transformationbase") and has_any("productassets", "localizationconstants", "cm_constants"):
+    # ── Configuration — Locale Unification ──────────────────────────────
+    if has_any("transformation", "configuration") and has_any("locale", "i18n"):
         areas.append({
-            "id": "CM-LOCALE",
-            "name": "Channel Management — Description Locale Unification",
+            "id": "CONFIG-LOCALE",
+            "name": "Configuration — Locale Unification",
             "emoji": "🔗",
             "risk": "HIGH",
-            "description": "CM description step now uses the unified locale list from PA (same locale codes). LanguageLocale type removed; getLanguageList function removed. Locale selection in CM descriptions must now match the PA locale set.",
-            "regression_guard": "CM Step 2 Description transformation locale dropdown — same codes as PA, no separate Language dropdown visible (run DTB-16988)",
+            "description": "Configuration step now uses the unified locale list. Locale selection must match the shared locale set across modules.",
+            "regression_guard": "Configuration locale dropdown shows unified locale codes, no separate Language dropdown visible",
             "scenarios": [
-                "Locale list in CM descriptions matches PA (same codes, same display names) — cross-check both dropdowns",
-                "Save description transformation with en-AU locale → no validation error, persists on page reload",
-                "No ghost/empty language selector where getLanguageList was removed — UI is clean",
+                "Locale list in configuration matches other modules (same codes, same display names)",
+                "Save configuration with new locale → no validation error, persists on page reload",
+                "No ghost/empty language selector where deprecated code was removed — UI is clean",
             ],
-            "affected_pages": ["Channel Management → Step 2 → Description transformation"],
             "ui_steps": [
-                {"step": "Open CM Step 2 and check description locale dropdown", "action": "Create or edit a channel → go to Step 2 (Apply Transformation) → add/view a Description transformation → open the locale dropdown", "verify": "Locale dropdown contains the same unified locale list as PA (including new locales de-CH, en-AU, etc.); old-format locale names (e.g. plain 'Czech') replaced with PIM names ('Czech (Czech Republic)')", "risk": "HIGH"},
-                {"step": "Select a newly added locale in CM description transformation", "action": "In the description transformation locale dropdown → select 'en-AU (English Australia)' → save the transformation", "verify": "Transformation saved with new locale code; no validation error; on re-load, locale is pre-selected correctly", "risk": "HIGH"},
-                {"step": "Verify no language list dropdown in CM description", "action": "In Step 2 Description transformation area → check if a separate 'Language' dropdown (distinct from locale) exists", "verify": "No separate language list dropdown (getLanguageList was removed). Only the unified locale selector is present. No broken empty dropdown visible", "risk": "HIGH"},
-                {"step": "Apply a description transformation for a renamed locale", "action": "Select locale 'cs-CZ (Czech (Czech Republic))' → add a text transformation → save", "verify": "Transformation works correctly; locale code cs-CZ used in API request (not the old display name)", "risk": "MEDIUM"},
+                {"step": "Check locale dropdown in configuration", "action": "Open configuration → locale dropdown", "verify": "Locale dropdown contains the unified locale list; old-format names replaced", "risk": "HIGH"},
+                {"step": "Save configuration with a new locale", "action": "Select a new locale → save", "verify": "Saved with new locale code; no validation error; on re-load, locale is pre-selected correctly", "risk": "HIGH"},
             ],
             "api_steps": [
-                {"endpoint": "GET /api/channel-management/channels/{id}/transformations?locale=en-AU", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {"channelId": "{id}", "locale": "en-AU"}, "verify": "Returns transformation list for the new locale code; no 400 for valid new locale codes", "risk": "HIGH"},
-                {"endpoint": "PATCH /api/channel-management/channels/{id}/transformations", "method": "PATCH", "headers": {"Authorization": "Bearer <token>", "Content-Type": "application/json"}, "params": {"locale": "en-AU", "attribute": "description", "transformationType": "APPEND", "value": "test"}, "verify": "200 OK; locale field in request body uses the PIM locale code (e.g. 'en-AU', not the old display name); FE-only properties NOT in request body", "risk": "HIGH"},
+                {"endpoint": "GET /api/config/{id}?locale={locale}", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "Returns configuration for the new locale code; no 400 for valid new locale codes", "risk": "HIGH"},
             ]
         })
 
-    # ── Channel Management — Marketplace Constants ──────────────────────
-    if has("cm_constants") and new_countries:
+    # ── New Constants / Enum Values Added ────────────────────────────────
+    if has("constants") and new_countries:
         areas.append({
-            "id": "CM-MARKET",
-            "name": "Channel Management — New Marketplace Countries",
+            "id": "NEW-CONSTANTS",
+            "name": "New Constant Values Added",
             "emoji": "🌐",
             "risk": "HIGH",
-            "regression_guard": "Create new channel — marketplace dropdown includes Singapore and India",
+            "regression_guard": "Dropdown/selector includes newly added constant values",
             "scenarios": [
-                "All newly added countries selectable in marketplace dropdown: Singapore, Australia, Japan, Canada, Mexico, Brazil, Spain, France, Belgium, Netherlands, Germany, Italy, Sweden, South Africa, Poland, Egypt, Turkey, Saudi Arabia, UAE, India",
-                "Create channel with new marketplace (e.g. Singapore) → POST /channels returns 201, marketplace persists on GET",
-                "Marketplace ID in Network tab request body is the Amazon ID (e.g. A19VAU5U5O7RUS), not just display name",
+                f"All newly added values selectable in relevant dropdown: {country_list}",
+                "Create new entity with a new value → POST returns 201, value persists on GET",
+                "Internal IDs in Network tab request body are correct mappings, not just display names",
             ],
-            "description": f"New Amazon marketplace countries added to CM_Constants: {country_list}. These must be selectable when creating a new Amazon channel.",
-            "affected_pages": ["Channel Management → Create Channel → Step 1 (Marketplace selector)"],
+            "description": f"New constant values added: {country_list}. These must be selectable in the relevant UI selectors.",
             "ui_steps": [
-                {"step": "Open marketplace dropdown in channel creation", "action": "Start creating a new channel → in Step 1, open the marketplace/country selector dropdown", "verify": f"All newly added countries are present and selectable: {country_list}", "risk": "HIGH"},
-                {"step": "Create a channel with a new marketplace", "action": "Select 'Singapore' from marketplace dropdown → complete channel setup steps → save", "verify": "Channel created successfully; marketplace value 'Singapore' stored and shown in channel list view", "risk": "HIGH"},
-                {"step": "Verify marketplace IDs are correctly mapped", "action": "Create channel with marketplace 'UK' → inspect the API request body in Network tab", "verify": "Marketplace ID sent to backend is the correct Amazon ID (e.g. 'A1F83G8C2ARO7P' for UK) not the display name; backend returns 200/201", "risk": "HIGH"},
+                {"step": "Open selector dropdown", "action": "Open the relevant creation/edit form → open the selector dropdown", "verify": f"All newly added values are present and selectable: {country_list}", "risk": "HIGH"},
+                {"step": "Create entity with a new value", "action": "Select a new value from the dropdown → complete form → save", "verify": "Entity created successfully; new value stored and shown in list view", "risk": "HIGH"},
             ],
             "api_steps": [
-                {"endpoint": "POST /api/channel-management/channels", "method": "POST", "headers": {"Authorization": "Bearer <token>", "Content-Type": "application/json"}, "params": {"name": "SG Test Channel", "marketplace": "Singapore", "marketplaceId": "A19VAU5U5O7RUS"}, "verify": "201 Created; channel visible in list; marketplace field persists on GET /channels/{id}", "risk": "HIGH"},
-                {"endpoint": "GET /api/channel-management/marketplaces", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": f"Response includes all new marketplace entries: {country_list[:5]}…; each has id and display name", "risk": "HIGH"},
+                {"endpoint": "POST /api/{resource}", "method": "POST", "headers": {"Authorization": "Bearer <token>", "Content-Type": "application/json"}, "params": {}, "verify": "201 Created; entity visible in list; new value persists on GET", "risk": "HIGH"},
             ]
         })
 
-    # ── Channel Management — Step 2 Transformations ─────────────────────
-    if has_any("steptwo", "transformationbase", "transformationitem", "casesensitive", "lookuptable", "fallbacklookup") and not (has("cm_constants") and new_countries):
+    # ── Data Transformations / Rules Engine ──────────────────────────────
+    if has_any("transformation", "rule", "lookup", "fallback") and not (has("constants") and new_countries):
         areas.append({
-            "id": "CM-S2",
-            "name": "Channel Management — Step 2: Transformations",
+            "id": "TRANSFORM",
+            "name": "Data Transformations / Rules Engine",
             "emoji": "2️⃣",
             "risk": "HIGH",
-            "description": "Transformation components refactored. CaseSensitiveComponent simplified. LanguageLocale removed from transformation context.",
-            "regression_guard": "Open existing channel in edit mode → Step 2 loads existing transformations without blank/broken components",
+            "description": "Transformation/rule components refactored. Verify CRUD operations and toggle persistence.",
+            "regression_guard": "Open existing entity in edit mode → transformation list loads without blank/broken components",
             "scenarios": [
-                "Add description transformation → save → appears in list with correct data and no missing fields",
-                "Case-sensitive toggle: enable → save → reload → persists as enabled (and disable also saves)",
-                "PATCH /transformations in Network tab — FE-only internal properties are NOT present in request body",
+                "Add transformation → save → appears in list with correct data and no missing fields",
+                "Toggle options: enable → save → reload → persists as enabled (and disable also saves)",
+                "PATCH request in Network tab — FE-only internal properties are NOT present in request body",
             ],
-            "affected_pages": ["Channel Management → Create/Edit Channel → Step 2"],
             "ui_steps": [
-                {"step": "Open Step 2 and verify transformations load", "action": "Open a channel in Edit Mode → navigate to Step 2 (Apply Transformation)", "verify": "Transformation list renders correctly; no blank/broken components where old language selector was", "risk": "HIGH"},
-                {"step": "Add a description transformation", "action": "Click 'Add transformation' → select attribute → configure → save", "verify": "Transformation item renders with all fields; saved correctly; appears in list", "risk": "HIGH"},
-                {"step": "Toggle case-sensitive option", "action": "In a text transformation → toggle case-sensitive checkbox ON → save → reload", "verify": "Case-sensitive setting is saved and persists; toggling OFF also works", "risk": "HIGH"},
-                {"step": "Delete a transformation", "action": "Click delete icon on an existing transformation → confirm in modal", "verify": "Transformation removed; UI updates; backend reflects removal", "risk": "MEDIUM"},
+                {"step": "Verify transformations load", "action": "Open entity in Edit Mode → navigate to transformation step", "verify": "Transformation list renders correctly; no blank/broken components", "risk": "HIGH"},
+                {"step": "Add a transformation", "action": "Click 'Add' → select attribute → configure → save", "verify": "Item renders with all fields; saved correctly; appears in list", "risk": "HIGH"},
+                {"step": "Delete a transformation", "action": "Click delete icon → confirm in modal", "verify": "Transformation removed; UI updates; backend reflects removal", "risk": "MEDIUM"},
             ],
             "api_steps": [
-                {"endpoint": "GET /api/channel-management/channels/{id}/transformations", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "Returns transformation list; FE-only state properties NOT present in response", "risk": "HIGH"},
-                {"endpoint": "PATCH /api/channel-management/channels/{id}/transformations", "method": "PATCH", "headers": {"Authorization": "Bearer <token>", "Content-Type": "application/json"}, "params": {"attribute": "description", "transformationType": "APPEND", "value": "suffix", "caseSensitive": True}, "verify": "200 OK; caseSensitive field accepted; FE-only properties stripped before send", "risk": "HIGH"},
+                {"endpoint": "GET /api/{resource}/{id}/transformations", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "Returns transformation list; FE-only state properties NOT present in response", "risk": "HIGH"},
+                {"endpoint": "PATCH /api/{resource}/{id}/transformations", "method": "PATCH", "headers": {"Authorization": "Bearer <token>", "Content-Type": "application/json"}, "params": {}, "verify": "200 OK; FE-only properties stripped before send", "risk": "HIGH"},
             ]
         })
 
-    # ── Syndication Management ────────────────────────────────────────────
-    if has_any("syndicationmanagement", "syndicationaccordion", "renderactions", "rendercompletedsynd", "renderongoinsynd"):
+    # ── Data Sync / Export Management ────────────────────────────────────
+    if has_any("syndication", "export", "sync"):
         areas.append({
-            "id": "SYND",
-            "name": "Syndication Management",
+            "id": "SYNC",
+            "name": "Data Sync / Export Management",
             "emoji": "🔁",
             "risk": "MEDIUM",
-            "description": "Completed syndication actions and accordion row rendering updated.",
-            "regression_guard": "Completed syndications accordion renders with action buttons visible and expand/collapse works",
+            "description": "Sync/export actions and list rendering updated.",
+            "regression_guard": "Completed exports render with action buttons visible and expand/collapse works",
             "scenarios": [
-                "Expand/collapse syndication accordion row — no layout shift or broken rendering",
-                "Reprocess action on completed syndication — loading state shown, feedback displayed after completion",
+                "Expand/collapse list row — no layout shift or broken rendering",
+                "Re-run action on completed export — loading state shown, feedback displayed after completion",
             ],
-            "affected_pages": ["Syndication Management page"],
             "ui_steps": [
-                {"step": "View completed syndications list", "action": "Go to Syndication Management → check the completed syndications section", "verify": "Completed syndications render in accordion; action buttons (Reprocess, Download) are visible", "risk": "MEDIUM"},
-                {"step": "Expand/collapse accordion row", "action": "Click to expand a syndication accordion row → then collapse it", "verify": "Row expands showing detailed syndication data; collapse works cleanly; no layout shift", "risk": "LOW"},
-                {"step": "Perform action on completed syndication", "action": "Click 'Reprocess' on a completed syndication", "verify": "Loading state shown; success/failure feedback displayed after action completes", "risk": "MEDIUM"},
-                {"step": "View ongoing syndications", "action": "Check the ongoing syndications section", "verify": "Ongoing syndications render with progress indicators; status updates correctly", "risk": "MEDIUM"},
+                {"step": "View completed exports list", "action": "Go to export management page → check the completed section", "verify": "Completed items render in list; action buttons are visible", "risk": "MEDIUM"},
+                {"step": "Expand/collapse row", "action": "Click to expand a row → then collapse it", "verify": "Row expands showing detail; collapse works cleanly; no layout shift", "risk": "LOW"},
+                {"step": "Perform action on completed export", "action": "Click 'Re-run' on a completed export", "verify": "Loading state shown; success/failure feedback displayed after action completes", "risk": "MEDIUM"},
             ],
             "api_steps": [
-                {"endpoint": "GET /api/syndication", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "Returns both ongoing and completed syndication lists; actions array per syndication is correct", "risk": "MEDIUM"},
+                {"endpoint": "GET /api/exports", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "Returns both ongoing and completed export lists; actions array per item is correct", "risk": "MEDIUM"},
             ]
         })
 
-    # ── Ratings & Reviews ─────────────────────────────────────────────────
-    if has_any("ratingsandreviews", "preferencemodal", "rrfrequency"):
+    # ── User Preferences / Settings ──────────────────────────────────────
+    if has_any("preference", "settings", "frequency"):
         areas.append({
-            "id": "RR",
-            "name": "Ratings & Reviews — Language Preferences",
+            "id": "PREFS",
+            "name": "User Preferences / Settings",
             "emoji": "⭐",
             "risk": "MEDIUM",
-            "description": "Preferences modal and frequency/language settings in R&R updated.",
-            "regression_guard": "R&R preferences modal opens — language dropdown shows PIM-aligned locale names (e.g. Czech (Czech Republic))",
+            "description": "Preferences modal and user settings updated.",
+            "regression_guard": "Preferences modal opens — settings render correctly",
             "scenarios": [
-                "Language options in R&R preferences modal show Table-3 PIM names (matches renamed locales)",
-                "Change review frequency → saves and persists on modal reopen; PATCH /preferences accepted without error",
+                "Preference options display correctly with updated values",
+                "Change a setting → saves and persists on modal reopen; PATCH /preferences accepted without error",
             ],
-            "affected_pages": ["Ratings & Reviews page"],
             "ui_steps": [
-                {"step": "Open Ratings & Reviews page", "action": "Navigate to Ratings & Reviews", "verify": "Reviews load with star ratings, review text, product info; no blank sections", "risk": "MEDIUM"},
-                {"step": "Open preferences modal and check language options", "action": "Click 'Preferences' or settings icon → check language/locale options in modal", "verify": "Updated locale names appear in R&R language preferences (e.g. 'Czech (Czech Republic)' not plain 'Czech'); all new locales present if applicable", "risk": "MEDIUM"},
-                {"step": "Change review frequency setting", "action": "In preferences modal → change frequency option (e.g. Weekly → Monthly) → save", "verify": "Frequency saved; modal closes; setting persists on next open; API request sent with correct frequency value", "risk": "MEDIUM"},
+                {"step": "Open preferences modal", "action": "Click 'Preferences' or settings icon → check options", "verify": "Settings load with correct values; no blank sections", "risk": "MEDIUM"},
+                {"step": "Change a setting", "action": "In preferences modal → change an option → save", "verify": "Setting saved; modal closes; persists on next open; API request sent with correct value", "risk": "MEDIUM"},
             ],
             "api_steps": [
-                {"endpoint": "GET /api/ratings-reviews/preferences", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "Returns current preferences including language/locale and frequency settings", "risk": "MEDIUM"},
-                {"endpoint": "PATCH /api/ratings-reviews/preferences", "method": "PATCH", "headers": {"Authorization": "Bearer <token>", "Content-Type": "application/json"}, "params": {"frequency": "WEEKLY", "language": "en-AU"}, "verify": "200 OK; new locale codes accepted in language field; re-fetch confirms saved values", "risk": "MEDIUM"},
+                {"endpoint": "GET /api/preferences", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "Returns current preferences", "risk": "MEDIUM"},
+                {"endpoint": "PATCH /api/preferences", "method": "PATCH", "headers": {"Authorization": "Bearer <token>", "Content-Type": "application/json"}, "params": {}, "verify": "200 OK; re-fetch confirms saved values", "risk": "MEDIUM"},
             ]
         })
 
     # ── Backend Service Logic detection ──────────────────────────────────
-    # Fires when changed files are Java/backend service files, not FE TypeScript
     _be_files = [f for f in changed_files if f.lower().endswith('.java') or '/be/' in f.lower() or '\\be\\' in f.lower()]
-    # Also pull keywords from new_status_values (method names, constants, conditions)
-    # so 'kpi', 'channel', 'download' are detected even when absent from file paths
     _ns_text = " ".join(
         f"{v.get('entry','')} {v.get('value','')}".lower()
         for v in new_statuses if isinstance(v, dict)
     )
     _be_lower = " ".join(f.lower() for f in _be_files) + " " + _ns_text
-    if _be_files or was_removed("dtb-be") or was_removed("backend"):
+    if _be_files or was_removed("backend"):
         def _be_has(kw): return kw in _be_lower
         if _be_has("download") or _be_has("kpi") or "download" in " ".join(removed_lower):
             areas.append({
                 "id": "BE-DOWNLOAD",
-                "name": "Download Flow & KPI Recording",
+                "name": "Download Flow & Analytics",
                 "emoji": "📊",
                 "risk": "HIGH",
-                "description": "Backend download service logic changed — new KPI tracking added on download trigger. Verify downloads complete and KPI data is recorded correctly.",
-                "regression_guard": "Trigger a full AVC/CM download — file received and no error returned from backend",
+                "description": "Backend download service logic changed. Verify downloads complete and analytics data is recorded correctly.",
+                "regression_guard": "Trigger a download — file received and no error returned from backend",
                 "scenarios": [
-                    "Download a channel (AVC/CM) → verify file received and no 500 errors",
-                    "Download confidential assets → verify completion and correct KPI recorded",
-                    "Download with invalid/expired session → verify 401 returned, no partial KPI write",
+                    "Download resource → verify file received and no 500 errors",
+                    "Download with invalid/expired session → verify 401 returned, no partial analytics write",
                 ],
                 "ui_steps": [
-                    {"step": "Trigger CM download", "action": "Channel Management → select channel → Download", "verify": "Download completes; file received; no error toast", "risk": "HIGH"},
-                    {"step": "Check download with KPI", "action": "Trigger download → check DB / admin dashboard for KPI entry", "verify": "KPI record created with correct channel, user, timestamp", "risk": "HIGH"},
+                    {"step": "Trigger download", "action": "Select resource → Download", "verify": "Download completes; file received; no error toast", "risk": "HIGH"},
                 ],
                 "api_steps": [
-                    {"endpoint": "POST /api/channel/download", "method": "POST", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "200 OK; file stream returned; KPI event persisted to PostgreSQL", "risk": "HIGH"},
+                    {"endpoint": "POST /api/download", "method": "POST", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "200 OK; file stream returned", "risk": "HIGH"},
                 ]
             })
-        if _be_has("channel") or _be_has("avc") or _be_has("channelmanagement"):
+        if _be_has("confidential") or _be_has("kpi") or _be_has("analytics"):
             areas.append({
-                "id": "BE-CM-AVC",
-                "name": "Channel Management & AVC Content Sync",
-                "emoji": "⚙️",
-                "risk": "HIGH",
-                "description": "AVC content sync and channel management backend logic updated. Regression needed on AVC workflow and CM download paths.",
-                "regression_guard": "AVC content sync completes without error; CM channel list loads and download is available",
-                "scenarios": [
-                    "Open Channel Management → list of channels loads correctly",
-                    "Trigger AVC content sync → verify sync completes without timeout or data loss",
-                    "CM download flow end-to-end → button visible, download triggers, file received",
-                ],
-                "ui_steps": [
-                    {"step": "Open Channel Management", "action": "Navigate to CM → verify channel list renders", "verify": "Channels listed with correct details; download button active", "risk": "HIGH"},
-                    {"step": "AVC sync flow", "action": "Trigger AVC content sync from CM → observe sync progress", "verify": "Sync runs to completion; no error; content appears updated", "risk": "MEDIUM"},
-                ],
-                "api_steps": [
-                    {"endpoint": "GET /api/channel-management", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "Returns channel list with correct metadata; no data missing after KPI changes", "risk": "HIGH"},
-                ]
-            })
-        if _be_has("confidential") or _be_has("kpi"):
-            areas.append({
-                "id": "BE-KPI-PERSIST",
-                "name": "KPI Data Persistence (PostgreSQL)",
+                "id": "BE-ANALYTICS",
+                "name": "Analytics Data Persistence",
                 "emoji": "🗄️",
                 "risk": "MEDIUM",
-                "description": "New KPI recording logic writes to PostgreSQL on download events. Verify data integrity and no regression in download flow.",
-                "regression_guard": "No duplicate KPI entries; download completes even if KPI write fails (non-blocking)",
+                "description": "Analytics/KPI recording logic updated. Verify data integrity and no regression in main flow.",
+                "regression_guard": "No duplicate entries; main flow completes even if analytics write fails (non-blocking)",
                 "scenarios": [
-                    "Verify KPI is saved with correct channel/user/timestamp on CM download",
-                    "Verify KPI recorded for confidential asset download",
-                    "Verify download flow is non-blocking — KPI write failure does not break download",
+                    "Verify analytics saved with correct metadata on trigger event",
+                    "Verify main flow is non-blocking — analytics write failure does not break user flow",
                 ],
                 "ui_steps": [],
                 "api_steps": [
-                    {"endpoint": "GET /api/kpi/dashboard", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "KPI counts increment correctly after each download event", "risk": "MEDIUM"},
+                    {"endpoint": "GET /api/analytics/dashboard", "method": "GET", "headers": {"Authorization": "Bearer <token>"}, "params": {}, "verify": "Counts increment correctly after each trigger event", "risk": "MEDIUM"},
                 ]
             })
 
@@ -467,7 +388,7 @@ def _extract_gateway_routes(pr_dir) -> List[Dict]:
 def build_cross_service_flow(consolidated: Dict, gateway_routes: List[Dict] = None) -> List[Dict]:
     """
     Dynamically generate cross-service test scenarios from real consolidated analysis data.
-    Replaces the previously hardcoded DTB-15307 scenarios.
+    Dynamically generates scenarios from consolidated analysis data.
 
     Logic:
     - Identifies FE vs BE services from file extensions
@@ -476,25 +397,17 @@ def build_cross_service_flow(consolidated: Dict, gateway_routes: List[Dict] = No
     """
     import re as _cre
 
-    # Known client-class → target-service mappings (Bitbucket service names)
-    _CLIENT_SVC_MAP = {
-        "dtbbeclient":                   "dtb-be",
-        "channelmanagementclient":        "digital-toolbox-svc-productassets",
-        "productassetsclient":            "digital-toolbox-svc-productassets",
-        "userloginclient":                "digital-toolbox-svc-user-login",
-        "datagovernanceclient":           "digital-toolbox-svc-data-governance",
-    }
+    # Known client-class → target-service mappings (add your project's mappings here)
+    _CLIENT_SVC_MAP = {}
 
     def _infer_target_service(class_name: str) -> str:
         lower = class_name.lower().replace("client", "")
         if lower + "client" in _CLIENT_SVC_MAP:
             return _CLIENT_SVC_MAP[lower + "client"]
-        # Generic camel-to-kebab: DtbBEClient → dtb-be
-        name = _cre.sub(r'(?i)^dtb', '', class_name)
-        name = _cre.sub(r'(?i)client$', '', name, flags=_cre.IGNORECASE)
+        name = _cre.sub(r'(?i)client$', '', class_name, flags=_cre.IGNORECASE)
         kebab = _cre.sub(r'([A-Z]+)([A-Z][a-z])', r'\1-\2', name)
         kebab = _cre.sub(r'([a-z])([A-Z])', r'\1-\2', kebab)
-        return "dtb-" + kebab.lower().strip('-')
+        return kebab.lower().strip('-')
 
     service_risks = dict(consolidated.get("service_risks", {}))
     services = list(service_risks.keys())
@@ -1259,7 +1172,7 @@ def generate_html(jira, consolidated, summary, test_selection, confluence_pages=
         test_links_html = (
             "<p style='font-size:0.88em;color:#555;margin-bottom:10px;'>Run these existing test cases — they directly cover changes in this PR:</p>"
             + "".join(
-                f'<a class="test-link" href="https://jira.tools.3stripes.net/browse/{l["key"]}" target="_blank">'
+                f'<a class="test-link" href="https://your-jira-instance.example.com/browse/{l["key"]}" target="_blank">'
                 f'<span class="badge MEDIUM" style="background:#1565c0;">{l["key"]}</span>'
                 f'<span>{l.get("summary","")}</span></a>'
                 for l in test_links
@@ -1407,7 +1320,7 @@ def generate_html(jira, consolidated, summary, test_selection, confluence_pages=
             ) or '<span style="color:#aaa;font-size:0.8em;">—</span>'
 
             id_badge = (
-                f'<a href="https://jira.tools.3stripes.net/browse/{tid}" target="_blank" '
+                f'<a href="https://your-jira-instance.example.com/browse/{tid}" target="_blank" '
                 f'style="font-family:monospace;font-size:0.8em;background:#e3f2fd;'
                 f'border:1px solid #90caf9;border-radius:3px;padding:1px 6px;color:#0d47a1;'
                 f'text-decoration:none;">{tid}</a>'
@@ -1591,7 +1504,7 @@ def generate_html(jira, consolidated, summary, test_selection, confluence_pages=
         _subtask_rows_dark += (
             f'<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #30363d;font-size:0.88em;">'
             f'<span style="background:{st_bg};color:#fff;border-radius:3px;padding:1px 7px;font-size:0.75em;white-space:nowrap;">{st}</span>'
-            f'<a href="https://jira.tools.3stripes.net/browse/{s.get("key","")}" target="_blank" style="color:#58a6ff;text-decoration:none;">{s.get("key","")}</a>'
+            f'<a href="https://your-jira-instance.example.com/browse/{s.get("key","")}" target="_blank" style="color:#58a6ff;text-decoration:none;">{s.get("key","")}</a>'
             f'<span style="color:#8b949e;">{s.get("summary","")}</span>'
             f'</div>'
         )
@@ -1618,7 +1531,7 @@ def generate_html(jira, consolidated, summary, test_selection, confluence_pages=
         key = tc.get("key", "")
         summ = tc.get("summary", tc.get("name", key))
         _test_links_dark += (
-            f'<a href="https://jira.tools.3stripes.net/browse/{key}" target="_blank" '
+            f'<a href="https://your-jira-instance.example.com/browse/{key}" target="_blank" '
             f'style="display:inline-flex;align-items:center;gap:7px;padding:6px 12px;'
             f'background:#161b22;border:1px solid #30363d;border-radius:4px;font-size:0.86em;'
             f'text-decoration:none;color:#58a6ff;margin:3px 4px 3px 0;">{key} — {summ}</a>'
@@ -1997,7 +1910,7 @@ class ReportGenerator:
         if jira_file and Path(jira_file).exists():
             with open(jira_file, encoding="utf-8-sig") as f:
                 self.jira_data = json.load(f)
-            # Derive pr_dir from jira_file location (e.g. pr-analysis/DTB-17595/)
+            # Derive pr_dir from jira_file location (e.g. pr-analysis/PROJ-1234/)
             self.pr_dir = Path(jira_file).parent
         if consolidated_file and Path(consolidated_file).exists():
             with open(consolidated_file, encoding="utf-8-sig") as f:

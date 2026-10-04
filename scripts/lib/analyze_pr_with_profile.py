@@ -5,8 +5,8 @@ Applies copilot-instructions PR Analyzer profile to generate clean QA analysis
 
 Usage:
   python3 analyze_pr_with_profile.py \
-    --consolidated-file pr-analysis/DTB-15307/consolidated.json \
-    --output pr-analysis/DTB-15307/qa_analysis.md
+    --consolidated-file pr-analysis/PROJ-1234/consolidated.json \
+    --output pr-analysis/PROJ-1234/qa_analysis.md
 """
 
 import sys

@@ -5,9 +5,9 @@ Consolidates per-service PR analysis and maps transitive dependencies.
 
 Usage:
   python3 analyze_dependencies.py \
-    --analysis-dir pr-analysis/DTB-17595 \
-    --jira-id DTB-17595 \
-    --output pr-analysis/DTB-17595/consolidated_summary.json
+    --analysis-dir pr-analysis/PROJ-1234 \
+    --jira-id PROJ-1234 \
+    --output pr-analysis/PROJ-1234/consolidated_summary.json
 
 Output:
   consolidated_summary.json with:

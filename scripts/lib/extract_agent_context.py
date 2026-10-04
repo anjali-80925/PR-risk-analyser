@@ -8,8 +8,8 @@ generate the HTML report in one shot — no sequential file reads needed.
 
 Usage:
     python3 scripts/lib/extract_agent_context.py \
-        --analysis-dir pr-analysis/DTB-17595 \
-        --jira-id DTB-17595
+        --analysis-dir pr-analysis/PROJ-1234 \
+        --jira-id PROJ-1234
 """
 
 import argparse

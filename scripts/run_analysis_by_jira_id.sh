@@ -6,8 +6,8 @@
 #   bash scripts/run_analysis_by_jira_id.sh <JIRA_ID> [OPTIONS]
 #
 # Examples:
-#   bash scripts/run_analysis_by_jira_id.sh DTB-17595
-#   bash scripts/run_analysis_by_jira_id.sh DTB-17595 --skip-tests --no-fetch
+#   bash scripts/run_analysis_by_jira_id.sh PROJ-1234
+#   bash scripts/run_analysis_by_jira_id.sh PROJ-1234 --skip-tests --no-fetch
 #
 # Workflow:
 #   1. Fetch Jira ticket details (Atlassian MCP)
@@ -32,7 +32,7 @@ usage() {
 Usage: bash scripts/run_analysis_by_jira_id.sh <JIRA_ID> [OPTIONS]
 
 Arguments:
-  <JIRA_ID>              Jira ticket ID (e.g., DTB-17595)
+  <JIRA_ID>              Jira ticket ID (e.g., PROJ-1234)
 
 Options:
   --filter-mode <mode>   Commit filter: any (default) | only | all

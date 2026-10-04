@@ -1,16 +1,19 @@
 #!/bin/bash
-cd /mnt/c/Users/anl/qa-workspace
-REPO=.service-repos/dtb-iconography-service
-DIFF=/tmp/ico.diff
+# Debug helper — run extract_enhanced.py on a single service for a given JIRA ID.
+# Replace the variables below with your own values.
+cd /path/to/workspace
+REPO=.service-repos/my-service
+DIFF=/tmp/debug.diff
+JIRA_ID=PROJ-1234
 rm -f $DIFF
-git -C $REPO log --all --extended-regexp --grep="DTB-17595" --pretty=%H 2>/dev/null | while read c; do
+git -C $REPO log --all --extended-regexp --grep="$JIRA_ID" --pretty=%H 2>/dev/null | while read c; do
   git -C $REPO show $c >> $DIFF 2>/dev/null
 done
 echo "Diff lines: $(wc -l < $DIFF)"
 python3 scripts/lib/extract_enhanced.py \
-  --service dtb-iconography-service \
-  --jira DTB-17595 \
+  --service my-service \
+  --jira $JIRA_ID \
   --diff $DIFF \
-  --out /tmp/ico_out 2>&1
+  --out /tmp/debug_out 2>&1
 echo "Exit: $?"
-ls /tmp/ico_out/
+ls /tmp/debug_out/

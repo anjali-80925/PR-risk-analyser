@@ -66,7 +66,7 @@ What you fix:
 
 Use [playwright-cli](.github/skills/playwright-cli/SKILL.md) to inspect the live app **without invoking the test runner**:
 
-1. Open the app: `playwright-cli open https://stg.dtb.adidas.com/#/<route>`
+1. Open the app: `playwright-cli open https://your-staging-url.example.com/#/<route>`
 2. Load saved auth state if needed: `playwright-cli state-load .auth/default_user.json`
 3. Navigate the failing flow manually
 4. Capture a fresh DOM snapshot: `playwright-cli snapshot`

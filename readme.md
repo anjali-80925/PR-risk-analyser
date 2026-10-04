@@ -31,9 +31,9 @@ bash scripts/init.sh
 The wizard asks for:
 
 - Git provider (`bitbucket-server` | `bitbucket-cloud` | `github` | `gitlab`)
-- Base repo URL — everything before the repo name (e.g. `git@github.com:digital-adidas`)
+- Base repo URL — everything before the repo name (e.g. `git@github.com:your-org`)
 - Service repo names — must match actual repo names exactly (one per line)
-- JIRA project key prefix (e.g. `DTB`, `PROJ`)
+- JIRA project key prefix (e.g. `PROJ`, `MYAPP`)
 - Test automation repo name (optional — enables test selection)
 
 This writes `config.env` in the workspace root. Edit it any time to add/remove services.
@@ -43,7 +43,7 @@ This writes `config.env` in the workspace root. Edit it any time to add/remove s
 In **VS Code Copilot Chat** (PR-analyser mode), type the Jira ticket ID:
 
 ```
-DTB-17595
+PROJ-1234
 ```
 
 That's it. Service repos are cloned automatically on first run into `.service-repos/`. No manual git clone needed.
@@ -144,7 +144,7 @@ bash scripts/run_analysis_by_jira_id.sh <JIRA_ID> [OPTIONS]
 
 **Typical agent invocation (Phases 1+2):**
 ```bash
-bash scripts/run_analysis_by_jira_id.sh DTB-17595 --no-fetch --no-report
+bash scripts/run_analysis_by_jira_id.sh PROJ-1234 --no-fetch --no-report
 ```
 
 ## config.env Reference
@@ -152,10 +152,10 @@ bash scripts/run_analysis_by_jira_id.sh DTB-17595 --no-fetch --no-report
 | Key | Description |
 |-----|-------------|
 | `GIT_PROVIDER` | `github` \| `gitlab` \| `bitbucket-server` \| `bitbucket-cloud` |
-| `REPO_BASE_URL` | SSH/HTTPS base URL before the repo name (e.g. `git@github.com:digital-adidas`) |
+| `REPO_BASE_URL` | SSH/HTTPS base URL before the repo name (e.g. `git@github.com:your-org`) |
 | `SERVICE_DISCOVERY_MODE` | `manual` (uses `SERVICES` list) \| `auto` (scans `.service-repos/`) |
 | `SERVICES` | Comma-separated repo names to analyse |
-| `JIRA_PROJECT_KEYS` | Comma-separated project key prefixes (e.g. `DTB,PROJ`) |
+| `JIRA_PROJECT_KEYS` | Comma-separated project key prefixes (e.g. `PROJ,MYAPP`) |
 | `TEST_REPOS` | Automation test repo name — leave blank to disable test selection |
 | `MAX_PARALLEL` | Max parallel service analysis jobs (default: `4`) |
 | `REF_CACHE_TTL` | Remote ref cache lifetime in seconds (default: `600`) |

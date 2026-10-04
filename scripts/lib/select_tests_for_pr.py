@@ -4,9 +4,9 @@ Test Case Selector — Intelligently selects tests based on PR risk analysis.
 
 Usage:
   python3 select_tests_for_pr.py \
-    --consolidated-summary pr-analysis/DTB-17595/consolidated_summary.json \
+    --consolidated-summary pr-analysis/PROJ-1234/consolidated_summary.json \
     --test-index .test-cache/test_index.json \
-    --output pr-analysis/DTB-17595/test_selection.json
+    --output pr-analysis/PROJ-1234/test_selection.json
 
 Selection Algorithm:
   1. For each HIGH-RISK service: select ALL tests for that service
@@ -160,7 +160,7 @@ class TestSelector:
         """
         all_tests = self._all_tests()
 
-        # 1. Exact match (also allow substring: "dtb-be" should match "b2bdtb-dtb-be")
+        # 1. Exact match (also allow substring match for org-prefixed service names)
         exact = [
             t for t in all_tests
             if t.get("service") == service
@@ -172,9 +172,10 @@ class TestSelector:
             return exact
 
         # 2. Keyword match — strip org/module prefixes in order (longest first to avoid partial matches)
-        # e.g. b2bdtb-dtb-iconography-service → iconography-service → ['iconography', 'service']
+        # e.g. myorg-app-auth-service → auth-service → ['auth', 'service']
+        # Add your org-specific prefixes here (longest first):
         svc_stripped = service
-        for prefix in ("b2bdtb-digital-toolbox-", "b2bdtb-dtb-", "b2bdtb-", "digital-toolbox-", "dtb-", "svc-"):
+        for prefix in ("svc-",):
             svc_stripped = svc_stripped.replace(prefix, "", 1) if svc_stripped.startswith(prefix) else svc_stripped
         keywords = [k for k in svc_stripped.split("-") if len(k) > 1]
         if keywords:

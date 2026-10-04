@@ -15,7 +15,7 @@ NOTE: Jira + Confluence data (jira_issue.json, confluence_pages.json) must
       They are fetched by GitHub Copilot via Atlassian MCP before this script runs.
 
 Usage:
-  python3 scripts/lib/run_analysis.py --ticket-id DTB-15307 [--service dtb-fe-react-v1]
+  python3 scripts/lib/run_analysis.py --ticket-id PROJ-1234 [--service my-frontend-app]
 
 Options:
   --ticket-id   Jira ticket key (required)
@@ -64,7 +64,7 @@ def find_service(ticket_id: str, pr_analysis_dir: Path) -> str | None:
 
 def main():
     parser = argparse.ArgumentParser(description="PR Risk Analysis Pipeline Orchestrator")
-    parser.add_argument("--ticket-id", required=True, help="Jira ticket key, e.g. DTB-15307")
+    parser.add_argument("--ticket-id", required=True, help="Jira ticket key, e.g. PROJ-1234")
     parser.add_argument("--service", default=None, help="Service/repo name (auto-detected if omitted)")
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--skip-tests", action="store_true")

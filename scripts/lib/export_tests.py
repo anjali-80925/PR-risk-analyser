@@ -4,9 +4,9 @@ Test Export — Export selected tests in multiple formats.
 
 Usage:
   python3 export_tests.py \
-    --test-selection pr-analysis/DTB-17595/test_selection.json \
+    --test-selection pr-analysis/PROJ-1234/test_selection.json \
     --format json,csv,gherkin \
-    --output-dir pr-analysis/DTB-17595/exports
+    --output-dir pr-analysis/PROJ-1234/exports
 
 Formats:
   - json: Machine-readable (default: test_selection.json)

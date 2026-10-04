@@ -4,7 +4,7 @@ Test Suite Indexer — Scans automation repo and builds searchable test index.
 
 Usage:
   python3 index_tests.py \
-    --repo-url ssh://git@bitbucket.tools.3stripes.net:7999/b2bdtb/dtb-automated-tests.git \
+    --repo-url git@github.com:your-org/automated-tests.git \
     --cache-dir .test-cache \
     --output test_index.json
 
@@ -111,13 +111,13 @@ class TestIndexer:
         Strategy (first match wins):
         1. Scan path parts from innermost to outermost for known service prefixes.
            This catches a subdirectory like 'dtb-be' before the repo root
-           'b2bdtb-dtb-automated-tests'.
+           'my-org-automated-tests'.
         2. Check the first 500 bytes of the file for an @service:<name> annotation.
         3. Fall back to the first path part (from innermost) that contains a hyphen
            and is not a generic directory name.
         """
         service_pattern = re.compile(
-            r"^(b2bdtb-[\w-]+|dtb-[\w-]+|digital-toolbox-[\w-]+|coi-[\w-]+)$"
+            r"^[\w]+-[\w-]+$"
         )
         # 1. Reversed path parts (file name itself excluded)
         for part in reversed(file_path.parts[:-1]):

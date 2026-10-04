@@ -28,3 +28,7 @@ __pycache__/
 # ── OS ───────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# ── Personal / non-project files ─────────────────────────────────────
+resume_rewrite/
+AI-driven/

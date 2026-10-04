@@ -9,13 +9,13 @@ using MCP tools. It does NOT make any network calls itself.
 
 Usage:
   python3 scripts/lib/save_ticket_data.py \
-    --ticket-id DTB-15307 \
+    --ticket-id PROJ-1234 \
     --jira-json '<json_string>' \
     --confluence-json '<json_string>'
 
 Or pipe JSON from stdin:
   echo '{"jira": {...}, "confluence": [...]}' | \
-    python3 scripts/lib/save_ticket_data.py --ticket-id DTB-15307 --from-stdin
+    python3 scripts/lib/save_ticket_data.py --ticket-id PROJ-1234 --from-stdin
 
 Output files (created under pr-analysis/<TICKET_ID>/):
   jira_issue.json       — full Jira ticket details
@@ -91,7 +91,7 @@ def normalize_confluence_pages(raw) -> list:
 
 def main():
     parser = argparse.ArgumentParser(description="Save MCP-fetched Jira+Confluence data for PR analysis pipeline")
-    parser.add_argument("--ticket-id", required=True, help="Jira ticket key, e.g. DTB-15307")
+    parser.add_argument("--ticket-id", required=True, help="Jira ticket key, e.g. PROJ-1234")
     parser.add_argument("--output-dir", default=None, help="Override output dir (default: pr-analysis/<TICKET_ID>)")
     parser.add_argument("--jira-json", default=None, help="Jira issue JSON as string")
     parser.add_argument("--confluence-json", default=None, help="Confluence pages JSON as string")

@@ -380,16 +380,16 @@ Use these dimensions throughout all stages:
   | Profile Key         | Description                              |
   | ------------------- | ---------------------------------------- |
   | `DEFAULT_USER`      | Default service account — main test user |
-  | `ADIDAS_USER`       | Adidas user profile                      |
+  | `ORG_USER`          | Organization-specific user profile       |
   | `UK_USER`           | UK region user                           |
   | `GERMANY_USER`      | Germany region user                      |
-  | `JAPAN_USER`        | Japan user (Namshi 2)                    |
-  | `USA_USER`          | USA region user (Namshi 3)               |
+  | `JAPAN_USER`        | Japan region user                        |
+  | `USA_USER`          | USA region user                          |
   | `RUSSIA_USER`       | Russia region user                       |
   | `SOUTH_AFRICA_USER` | South African user                       |
-  | `COI_USER`          | COI user (Namshi 1)                      |
-  | `REEBOK_USER`       | Reebok user profile                      |
-  | `ORDER_USER`        | Order user (Hudson Bay)                  |
+  | `REGION_USER`       | Region-specific user profile             |
+  | `BRAND_USER`        | Brand-specific user profile              |
+  | `ORDER_USER`        | Order management user                    |
   | `NO_ACCESS_USER`    | Invalid user for negative testing        |
 
   Ask the user which profile to use if the scenario depends on a specific region, brand, or access level.
@@ -582,9 +582,9 @@ Ask these 4 questions before creating the defect (present as a numbered list):
 **Auto-populated fields** (derive from context):
 
 - **Summary**: Generate from the scenario/finding in format `[Feature] Description` or `<Feature> Description`
-- **Description**: Use the standard DTB defect template (see reference file)
+- **Description**: Use the standard defect template (see reference file)
 - **Priority**: Derive from Severity (Critical/Major → High, Minor → Medium, Trivial → Low)
-- **Link**: Link to parent story if known (e.g., DTB-17653)
+- **Link**: Link to parent story if known (e.g., PROJ-1234)
 
 **Custom field mapping**:
 
@@ -610,7 +610,7 @@ Ask these 4 questions before creating the defect (present as a numbered list):
 ```
 ## Create Defect
 
-**Defect Created**: [DTB-XXXXX](https://jira.tools.3stripes.net/browse/DTB-XXXXX)
+**Defect Created**: [PROJ-XXXXX](https://your-jira-instance.example.com/browse/PROJ-XXXXX)
 
 | Field | Value |
 |-------|-------|
